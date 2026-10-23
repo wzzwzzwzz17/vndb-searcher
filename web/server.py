@@ -158,7 +158,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/ggbase":
             try:
-                found = search_ggbase(payload.get("original") or "", payload.get("title") or "")
+                found = search_ggbase(
+                    payload.get("original") or "",
+                    payload.get("title") or "",
+                    bool(payload.get("must_find")),
+                )
             except Exception:  # noqa: BLE001
                 found = {"ok": False, "reason": "GGBase 暂时连不上", "pages": []}
             self._json(200, found)
@@ -174,6 +178,7 @@ class Handler(BaseHTTPRequestHandler):
                 profile["ggbase"] = search_ggbase(
                     payload.get("original") or "",
                     payload.get("title") or "",
+                    bool(payload.get("must_find")),
                 )
             except Exception:  # noqa: BLE001
                 profile["ggbase"] = {"ok": False, "reason": "GGBase 暂时连不上", "pages": []}

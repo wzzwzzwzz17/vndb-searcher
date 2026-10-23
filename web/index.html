@@ -229,22 +229,21 @@
       box.appendChild(h);
       const note = document.createElement("p");
       note.className = "meta";
-      note.textContent = "按栏目标题相似度取前 3 个栏目页。";
       box.appendChild(note);
       if (!row || !row.ok) {
-        const p = document.createElement("p");
-        p.className = "meta";
-        p.textContent = (row && row.reason) || "没有资料";
-        box.appendChild(p);
+        note.textContent = (row && row.reason) || "没有资料";
         return box;
       }
+      note.textContent = row.judge
+        ? "这一页只有 1 到 3 条，没有要求完全或一半对上。栏目上的名字如下，请自行判断是不是这部作品。"
+        : "只用日文搜索：先全名，再连续一半，再随机四分之一。";
       (row.pages || []).slice(0, 3).forEach((item) => {
         if (!item.page || !/https:\/\/www\.ggbases\.com\/view\.so\?id=\d+$/.test(item.page)) return;
         const a = document.createElement("a");
         a.href = item.page;
         a.target = "_blank";
         a.rel = "noreferrer";
-        a.textContent = item.name || item.page;
+        a.textContent = "栏目名：" + (item.name || item.page);
         box.appendChild(a);
       });
       return box;
@@ -329,7 +328,7 @@
             a.href = item.page;
             a.target = "_blank";
             a.rel = "noreferrer";
-            a.textContent = label + " · " + (item.name || "参考页");
+            a.textContent = (label === "GGBase" ? "栏目名：" : (label + " · ")) + (item.name || "参考页");
             pages.appendChild(a);
           });
         });

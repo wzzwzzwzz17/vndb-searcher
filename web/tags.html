@@ -219,7 +219,9 @@
         box.innerHTML = "";
         const note = document.createElement("p");
         note.className = "meta";
-        note.textContent = row.ok ? "GGBase 栏目页（相似度前 3）：" : (row.reason || "没有资料");
+        note.textContent = row.ok
+          ? (row.judge ? "这一页只有 1 到 3 条。栏目上的名字如下，请自行判断是不是这部作品。" : "GGBase 栏目页：")
+          : (row.reason || "没有资料");
         box.appendChild(note);
         (row.pages || []).slice(0, 3).forEach((item) => {
           if (!item.page || !/https:\/\/www\.ggbases\.com\/view\.so\?id=\d+$/.test(item.page)) return;
@@ -227,7 +229,7 @@
           a.href = item.page;
           a.target = "_blank";
           a.rel = "noreferrer";
-          a.textContent = item.name || item.page;
+          a.textContent = "栏目名：" + (item.name || item.page);
           a.addEventListener("click", (event) => event.stopPropagation());
           box.appendChild(a);
         });
