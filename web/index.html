@@ -2,8 +2,10 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#14110c" />
   <title>VNDB搜索器</title>
+  <link rel="stylesheet" href="/mobile.css" />
   <style>
     :root {
       --bg: #f4f0ff;
@@ -132,7 +134,13 @@
 
     <section id="grid" class="grid"></section>
     <footer>雨里百跳 · 点开卡片可看标签、简介和参考页入口。国内访问 VNDB 通常需要 VPN。</footer>
+    <p class="phone-hint">用手机打开：__PHONE_URL__</p>
   </div>
+  <nav class="dock">
+    <a href="/" class="on">推荐</a>
+    <a href="/name">寻名</a>
+    <a href="/tags">标签</a>
+  </nav>
 
   <div id="modal" class="modal hidden">
     <div class="sheet">

@@ -1,0 +1,68 @@
+/* 手机布局，对照安卓版底部「推荐 / 寻名 / 标签」。桌面仍用页面顶部链接。 */
+html { -webkit-text-size-adjust: 100%; scroll-padding-bottom: 120px; }
+body { overflow-x: hidden; }
+img, svg, video { max-width: 100%; height: auto; }
+button, a, input, textarea { touch-action: manipulation; }
+input, textarea, select { font-size: 16px; }
+.links a, .card h3, .meta, .desc, .status, .hint, p { overflow-wrap: anywhere; }
+.modal { z-index: 40; }
+.dock, .phone-hint { display: none; }
+
+@media (max-width: 800px) {
+  .wrap {
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+    padding: 12px 12px calc(128px + env(safe-area-inset-bottom));
+  }
+  .nav { display: none !important; }
+  header { display: block; padding: 8px 0; }
+  header svg { display: none; }
+  .hero-copy h1, h1 { font-size: 28px; }
+  .panel, .card, .sheet { border-radius: 18px; }
+  .row { align-items: stretch; }
+  .row > input,
+  .row > button,
+  .row > label,
+  button.primary,
+  button.ghost,
+  .primary {
+    width: 100%;
+    max-width: none !important;
+    min-width: 0 !important;
+  }
+  .grid { grid-template-columns: 1fr; }
+  .tree, .ops { max-height: 46vh; }
+  .sheet {
+    width: 100%;
+    max-height: calc(100vh - 12px - env(safe-area-inset-bottom));
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  .phone-hint { display: block !important; color: #8a7356; font-size: 13px; }
+  .dock {
+    display: flex !important;
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    z-index: 30;
+    gap: 4px;
+    padding: 6px;
+    background: rgba(28, 22, 14, 0.94);
+    border: 1px solid #6e552c;
+    border-radius: 999px;
+  }
+  .dock a {
+    flex: 1;
+    min-height: 44px;
+    line-height: 44px;
+    text-align: center;
+    text-decoration: none;
+    border-radius: 999px;
+    color: #e7d7b4;
+    font-weight: 800;
+  }
+  .dock a.on { background: #e2b15a; color: #2a1c0a; }
+}

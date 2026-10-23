@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -24,8 +25,9 @@ from ggbase import search_ggbase  # noqa: E402
 INDEX = os.path.join(ROOT, "index.html")
 NAME_PAGE = os.path.join(ROOT, "name.html")
 TAG_PAGE = os.path.join(ROOT, "tags.html")
-HOST = os.environ.get("VNDB_WEB_HOST", "127.0.0.1")
+HOST = os.environ.get("VNDB_WEB_HOST", "0.0.0.0")
 PORT = int(os.environ.get("VNDB_WEB_PORT", "8787"))
+MOBILE_CSS = os.path.join(ROOT, "mobile.css")
 
 
 def _slim(item: dict) -> dict:
@@ -74,12 +76,17 @@ class Handler(BaseHTTPRequestHandler):
             "/tags": TAG_PAGE,
             "/tags.html": TAG_PAGE,
         }
+        if path == "/mobile.css":
+            with open(MOBILE_CSS, "rb") as handle:
+                self._send(200, handle.read(), "text/css; charset=utf-8")
+            return
         target = pages.get(path)
         if target is None:
             self._send(404, b"not found", "text/plain; charset=utf-8")
             return
         with open(target, "rb") as handle:
-            self._send(200, handle.read(), "text/html; charset=utf-8")
+            body = handle.read().replace(b"__PHONE_URL__", _phone_url().encode("utf-8"))
+            self._send(200, body, "text/html; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
@@ -227,9 +234,28 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
 
+def _lan_ip() -> str:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        sock.close()
+
+
+def _phone_url() -> str:
+    ip = _lan_ip()
+    if not ip or ip.startswith("127."):
+        return f"http://127.0.0.1:{PORT}/"
+    return f"http://{ip}:{PORT}/"
+
+
 def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"VNDB搜索器网页 http://{HOST}:{PORT}")
+    print(f"本机 http://127.0.0.1:{PORT}/")
+    print(f"手机请打开 {_phone_url()}")
     server.serve_forever()
 
 

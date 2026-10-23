@@ -756,7 +756,7 @@
     const pages = $("detailPages");
     box.innerHTML = "";
     pages.innerHTML = "";
-    [["鲲 Galgame", profile.kungal], ["TouchGal", profile.touchgal], ["真红小站", profile.shinnku]].forEach(([label, row]) => {
+    [["鲲 Galgame", profile.kungal], ["TouchGal", profile.touchgal], ["真红小站", profile.shinnku], ["GGBase", profile.ggbase]].forEach(([label, row]) => {
       const block = document.createElement("section");
       const heading = document.createElement("h3");
       heading.textContent = label;
@@ -767,6 +767,14 @@
         empty.textContent = (row && row.reason) || "没有资料";
         block.appendChild(empty);
       } else {
+        if (label === "GGBase") {
+          const hint = document.createElement("p");
+          hint.className = "hint";
+          hint.textContent = row.judge
+            ? "这一页只有 1 到 3 条。栏目上的名字如下，请自行判断是不是这部作品。"
+            : "只用日文全名、连续一半和随机四分之一。";
+          block.appendChild(hint);
+        }
         if (row.tags && row.tags.length) {
           const tags = document.createElement("p");
           tags.className = "hint";
@@ -783,10 +791,11 @@
       const list = (row && row.pages) || (row && row.page ? [{ name: (row && row.name) || label, page: row.page }] : []);
       list.forEach((item) => {
         if (!item.page) return;
+        if (label === "GGBase" && !/^https:\/\/www\.ggbases\.com\/view\.so\?id=\d+$/.test(item.page)) return;
         const button = document.createElement("button");
         button.type = "button";
         button.className = "btn";
-        button.textContent = label + " · " + (item.name || "参考页");
+        button.textContent = (label === "GGBase" ? "栏目名：" : (label + " · ")) + (item.name || "参考页");
         button.addEventListener("click", () => openExternal(item.page));
         pages.appendChild(button);
       });
@@ -794,7 +803,7 @@
     if (!pages.children.length) {
       const empty = document.createElement("p");
       empty.className = "hint";
-      empty.textContent = "这三个站暂时没有对上参考页。";
+      empty.textContent = "这几个站暂时没有对上参考页。";
       pages.appendChild(empty);
     }
   }
@@ -811,7 +820,7 @@
     $("detailDesc").textContent = it.description || "（无简介）";
     $("detailSites").innerHTML = "";
     $("detailPages").innerHTML = "";
-    $("detailLoading").textContent = "正在读取鲲、TouchGal 和真红小站的参考页…";
+    $("detailLoading").textContent = "正在读取鲲、TouchGal、真红小站和 GGBase 的参考页…";
     $("detailLoading").classList.remove("hidden");
     if (it.url) {
       const vndb = document.createElement("button");
@@ -835,7 +844,8 @@
       const profile = {
         kungal: await kunProfile(queries),
         touchgal: await touchProfile(queries),
-        shinnku: await shinnkuPages(queries, mustFind)
+        shinnku: await shinnkuPages(queries, mustFind),
+        ggbase: await ggbasePages(queries, mustFind)
       };
       if (seq !== detailSeq) return;
       renderSitePages(profile);
@@ -1233,6 +1243,154 @@
       return { ok: false, reason: "真红小站搜了 " + tried + " 次日文或英文片段，仍没有对上的目录", pages: [] };
     }
     return { ok: true, name: pages[0].name, page: pages[0].page, pages: pages, intro: "", tags: [] };
+  }
+
+  function decodeHtml(text) {
+    return String(text || "")
+      .replace(/&#(\d+);/g, (all, num) => {
+        const code = Number(num);
+        return code > 0 && code < 0x110000 ? String.fromCodePoint(code) : all;
+      })
+      .replace(/&#x([0-9a-f]+);/gi, (all, num) => {
+        const code = parseInt(num, 16);
+        return code > 0 && code < 0x110000 ? String.fromCodePoint(code) : all;
+      })
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, "\"")
+      .replace(/&nbsp;/g, " ");
+  }
+
+  function ggbaseNorm(text) {
+    return String(text || "").toLowerCase()
+      .replace(/\.(?:zip|rar|7z|iso|mds|torrent)$/i, "")
+      .replace(/[^0-9a-z\u3040-\u30ff\u4e00-\u9fff]+/g, "");
+  }
+
+  function japaneseSource(queries) {
+    const texts = [];
+    queries.forEach((text) => {
+      const cleaned = String(text || "").replace(/\s+/g, " ").trim();
+      if (cleaned && texts.indexOf(cleaned) < 0) texts.push(cleaned);
+    });
+    const kana = texts.filter((text) => /[\u3040-\u30ff]/.test(text));
+    if (kana.length) {
+      kana.sort((a, b) => (b.match(/[\u3040-\u30ff]/g) || []).length - (a.match(/[\u3040-\u30ff]/g) || []).length);
+      return kana[0];
+    }
+    if (texts[0] && texts[0] !== texts[1] && /[\u4e00-\u9fff]/.test(texts[0])) return texts[0];
+    return "";
+  }
+
+  function ggbaseTerms(text, mustFind) {
+    const terms = [];
+    function add(value) {
+      const cleaned = String(value || "").replace(/\s+/g, " ").trim();
+      if (ggbaseNorm(cleaned).length < 2 || terms.indexOf(cleaned) >= 0) return;
+      terms.push(cleaned);
+    }
+    add(text);
+    const chars = Array.from(text);
+    const count = chars.length;
+    if (count >= 4) {
+      const half = Math.max(2, Math.floor(count / 2));
+      add(chars.slice(0, half).join(""));
+      const middle = Math.max(0, Math.floor((count - half) / 2));
+      add(chars.slice(middle, middle + half).join(""));
+      add(chars.slice(count - half).join(""));
+      const quarter = Math.max(2, Math.floor(count / 4));
+      const rounds = mustFind ? 8 : 4;
+      for (let i = 0; i < rounds; i++) {
+        if (count <= quarter) { add(text); break; }
+        const start = Math.floor(Math.random() * (count - quarter + 1));
+        add(chars.slice(start, start + quarter).join(""));
+      }
+    }
+    return terms.slice(0, mustFind ? 12 : 8);
+  }
+
+  function ggbaseHalf(text) {
+    const chars = Array.from(text);
+    const count = chars.length;
+    if (count < 4) return [];
+    const half = Math.max(2, Math.floor(count / 2));
+    const middle = Math.max(0, Math.floor((count - half) / 2));
+    return [
+      chars.slice(0, half).join(""),
+      chars.slice(middle, middle + half).join(""),
+      chars.slice(count - half).join("")
+    ];
+  }
+
+  function ggbaseFullOrHalf(japanese, columnName) {
+    const right = ggbaseNorm(columnName);
+    const left = ggbaseNorm(japanese);
+    if (right.length < 2 || left.length < 2) return false;
+    if (right.indexOf(left) >= 0 || left.indexOf(right) >= 0) return true;
+    return ggbaseHalf(japanese).some((piece) => {
+      const norm = ggbaseNorm(piece);
+      return norm.length >= 2 && right.indexOf(norm) >= 0;
+    });
+  }
+
+  function ggbaseScore(query, title) {
+    const left = ggbaseNorm(query);
+    const right = ggbaseNorm(title);
+    if (left.length < 2 || right.length < 2) return 0;
+    if (left === right || right.indexOf(left) >= 0) return 1;
+    return left.length / Math.max(right.length, 1);
+  }
+
+  async function searchGgbaseOnce(keyword) {
+    const res = await httpGet(
+      "https://www.ggbases.com/search.so?p=0&title=" + encodeURIComponent(keyword) + "&advanced=0",
+      { Accept: "text/html", "User-Agent": "VNDB-Searcher/1.0 (Android; author: yulibaitiao)" }
+    );
+    const html = res.body || "";
+    const re = /href="([^"]*view\.so\?id=(\d+))"[^>]*>([\s\S]*?)<\/a>/gi;
+    const found = [];
+    const seen = {};
+    let match;
+    while ((match = re.exec(html))) {
+      const columnId = match[2];
+      const href = match[1].toLowerCase();
+      if (seen[columnId] || href.indexOf("magnet") >= 0 || href.indexOf("down.so") >= 0) continue;
+      const name = decodeHtml(match[3].replace(/<[^>]+>/g, "")).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+      if (!name) continue;
+      seen[columnId] = 1;
+      found.push({ id: columnId, name: name });
+    }
+    return found;
+  }
+
+  function ggbasePack(items, judge) {
+    const pages = items.map((item) => ({
+      name: item.name,
+      page: "https://www.ggbases.com/view.so?id=" + item.id
+    })).filter((item) => /^https:\/\/www\.ggbases\.com\/view\.so\?id=\d+$/.test(item.page));
+    if (!pages.length) return { ok: false, reason: "GGBase 没有可打开的栏目页", pages: [] };
+    return { ok: true, name: pages[0].name, page: pages[0].page, pages: pages, judge: judge, intro: "", tags: [] };
+  }
+
+  async function ggbasePages(queries, mustFind) {
+    const japanese = japaneseSource(queries);
+    const terms = japanese ? ggbaseTerms(japanese, mustFind) : [];
+    if (!terms.length) return { ok: false, reason: "没有日文名，GGBase 只按日文搜索", pages: [] };
+    try {
+      for (let i = 0; i < terms.length; i++) {
+        if (i) await new Promise((resolve) => setTimeout(resolve, 200));
+        const items = await searchGgbaseOnce(terms[i]);
+        if (items.length > 0 && items.length < 4) return ggbasePack(items, true);
+        const matched = items.filter((item) => ggbaseFullOrHalf(japanese, item.name));
+        if (!matched.length) continue;
+        matched.sort((a, b) => (ggbaseScore(japanese, b.name) - ggbaseScore(japanese, a.name)) || (a.name.length - b.name.length));
+        return ggbasePack(matched.slice(0, 3), false);
+      }
+    } catch (e) {
+      return { ok: false, reason: "GGBase 暂时连不上", pages: [] };
+    }
+    return { ok: false, reason: "GGBase 用日文名和片段搜过，没有可列出的栏目", pages: [] };
   }
 
   async function lookupSite(kind, keyword) {
