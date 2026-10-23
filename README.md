@@ -123,7 +123,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 3. 安装生成的 `android/out/VNDB-searcher.apk`。脚本会再复制一份到 `android/VNDB-searcher.apk`。当前签名是本机自动生成的 debug 证书，密码是 `android`，不要拿它发正式版。
 4. 打开应用后先填写 DeepSeek API Key。底部切换「推荐 / 寻名 / 标签」。应用图标是仓库里的 512×512 图片。
 
-安卓版把网页三页收进同一个 WebView，请求直接从手机发出，不依赖本机的 `web/server.py`。
+安卓版把网页三页收进同一个 WebView，请求直接从手机发出，不依赖本机的 `web/server.py`。点结果卡片会加载鲲、TouchGal 和真红小站的参考页，再用系统浏览器打开。鲲使用公开接口，不需要 Token。
 
 ## 已知问题
 

@@ -1,6 +1,8 @@
 package com.yulibaitiao.vndbsearcher;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.net.Uri;
 import android.util.Base64;
 import android.os.Build;
 import android.os.Bundle;
@@ -258,6 +260,23 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void httpGetAsync(String id, String url, String headersJson) {
             new Thread(() -> deliver(id, httpGet(url, headersJson))).start();
+        }
+
+        @JavascriptInterface
+        public void openUrl(String url) {
+            if (url == null) return;
+            String trimmed = url.trim();
+            String lower = trimmed.toLowerCase();
+            if (!(lower.startsWith("https://") || lower.startsWith("http://"))) return;
+            int query = lower.indexOf('?');
+            String path = query >= 0 ? lower.substring(0, query) : lower;
+            if (path.endsWith(".zip") || path.endsWith(".rar") || path.endsWith(".7z") || path.endsWith(".iso")) return;
+            runOnUiThread(() -> {
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(trimmed)));
+                } catch (Exception ignored) {
+                }
+            });
         }
     }
 }

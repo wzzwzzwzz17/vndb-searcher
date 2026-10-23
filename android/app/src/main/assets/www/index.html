@@ -23,11 +23,9 @@
       <label class="field" for="apiKey">DeepSeek API Key</label>
       <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
       <p class="hint">可在 DeepSeek 开放平台创建。不会上传到本应用作者的服务器。</p>
-      <label class="field" for="kunToken">鲲 Galgame Token（可选）</label>
-      <input id="kunToken" type="password" placeholder="站点要求登录时再填" autocomplete="off" />
       <label class="field" for="touchToken">TouchGal Token（可选）</label>
       <input id="touchToken" type="password" placeholder="没有就留空" autocomplete="off" />
-      <p class="hint">这两个只用来读取作品评分，不拿下载链接。留空时如果站点拒绝访问，结果里对应分数会显示为横线。</p>
+      <p class="hint">鲲 Galgame 直接用公开接口，不用 Token。TouchGal 留空时不参与评分。两边都只读作品页，不拿下载链接。</p>
       <div class="actions">
         <button id="saveKey" class="btn-main" type="button">保存并继续</button>
       </div>
@@ -71,6 +69,10 @@
         <input id="singleCore" type="checkbox" />
         只按一个核心标签搜索
       </label>
+      <label class="check">
+        <input id="mustFind" type="checkbox" />
+        必须搜中（真红小站用更短的日文片段多搜几次）
+      </label>
       <p class="hint" id="modeHint"></p>
     </section>
 
@@ -92,7 +94,7 @@
 
     <section class="card">
       <h2>结果</h2>
-      <p class="hint">勾选后可收藏。点「查看详情」看中文简介和出版社。双击卡片也可以。</p>
+      <p class="hint">勾选后可收藏。点卡片或「查看详情」，加载鲲、TouchGal、真红小站的参考页。</p>
       <div id="results"></div>
     </section>
 
@@ -168,18 +170,16 @@
       <p>制作者：雨里百跳（代号）</p>
       <h2>注意事项</h2>
       <ul>
-        <li>只查询 VNDB 公开元数据：名称、评分、简介、标签、链接、开发商。没有资源、没有下载。</li>
+        <li>作品详情里的参考页来自鲲 Galgame、TouchGal 和真红小站，只打开作品页或站内搜索页，不提供压缩包或磁力链接。鲲使用公开接口，不需要 Token。</li>
         <li>请遵守 VNDB API 使用条款（非商业、有频率限制）。请勿短时间连续狂点搜索。</li>
         <li>成人向标签来自 VNDB 官方分类。请自行遵守所在地法律。</li>
         <li>DeepSeek Key 存在本机，用于把自然语言变成筛选条件，并翻译简介和标签。</li>
         <li>内置约 3000 个官方标签，所以匹配标签本身不需要先连上 VNDB。真正列出作品时仍要访问 VNDB，国内通常需要 VPN。</li>
         <li>硬核模式允许找不到作品，不会为了凑结果把条件放得很松。</li>
       </ul>
-      <label class="field" for="kunToken2">鲲 Galgame Token（可选）</label>
-      <input id="kunToken2" type="password" autocomplete="off" />
       <label class="field" for="touchToken2">TouchGal Token（可选）</label>
       <input id="touchToken2" type="password" autocomplete="off" />
-      <p class="hint">只用于读取评分。保存发生在点「关闭」时。</p>
+      <p class="hint">只用于读取 TouchGal 评分和作品页。保存发生在点「关闭」时。鲲不需要填写。</p>
       <h2>借鉴与参考</h2>
       <ul>
         <li>VNDB 网站：https://vndb.org/</li>
@@ -211,9 +211,14 @@
       <p id="detailMeta" class="meta"></p>
       <p id="detailPub"></p>
       <p id="detailTags"></p>
-      <p id="detailLink" class="meta"></p>
+      <div id="detailLink" class="links"></div>
       <h2>剧情简介</h2>
       <div id="detailDesc" class="summary"></div>
+      <p id="detailLoading" class="hint">正在读取参考页…</p>
+      <div id="detailSites"></div>
+      <h2>参考页入口</h2>
+      <div id="detailPages" class="links"></div>
+      <p class="hint">这里是作品参考页，不是压缩包或磁力链接。</p>
       <div class="actions">
         <button id="detailClose" class="btn-main" type="button">关闭</button>
       </div>

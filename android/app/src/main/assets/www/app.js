@@ -735,25 +735,115 @@
       body.appendChild(tags);
       body.appendChild(desc);
       body.appendChild(btn);
+      body.addEventListener("click", () => openDetail(it));
       row.appendChild(cb);
       row.appendChild(body);
-      row.addEventListener("dblclick", () => openDetail(it));
       row._item = it;
       row._cb = cb;
       box.appendChild(row);
     });
   }
 
-  function openDetail(it) {
+  let detailSeq = 0;
+
+  function openExternal(url) {
+    if (!url || !window.Android || !Android.openUrl) return;
+    Android.openUrl(url);
+  }
+
+  function renderSitePages(profile) {
+    const box = $("detailSites");
+    const pages = $("detailPages");
+    box.innerHTML = "";
+    pages.innerHTML = "";
+    [["鲲 Galgame", profile.kungal], ["TouchGal", profile.touchgal], ["真红小站", profile.shinnku]].forEach(([label, row]) => {
+      const block = document.createElement("section");
+      const heading = document.createElement("h3");
+      heading.textContent = label;
+      block.appendChild(heading);
+      if (!row || !row.ok) {
+        const empty = document.createElement("p");
+        empty.className = "hint";
+        empty.textContent = (row && row.reason) || "没有资料";
+        block.appendChild(empty);
+      } else {
+        if (row.tags && row.tags.length) {
+          const tags = document.createElement("p");
+          tags.className = "hint";
+          tags.textContent = row.tags.join("、");
+          block.appendChild(tags);
+        }
+        if (row.intro) {
+          const intro = document.createElement("p");
+          intro.textContent = row.intro;
+          block.appendChild(intro);
+        }
+      }
+      box.appendChild(block);
+      const list = (row && row.pages) || (row && row.page ? [{ name: (row && row.name) || label, page: row.page }] : []);
+      list.forEach((item) => {
+        if (!item.page) return;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "btn";
+        button.textContent = label + " · " + (item.name || "参考页");
+        button.addEventListener("click", () => openExternal(item.page));
+        pages.appendChild(button);
+      });
+    });
+    if (!pages.children.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = "这三个站暂时没有对上参考页。";
+      pages.appendChild(empty);
+    }
+  }
+
+  async function openDetail(it) {
+    const seq = ++detailSeq;
     $("detailTitle").textContent = it.title || "作品";
     const rating = (typeof it.rating === "number") ? it.rating.toFixed(2) : "暂无";
     $("detailMeta").textContent = (it.original || "无原名") + " · " + (it.scoreLine || ("VNDB " + rating)) + " · " + (it.released || "日期未知");
     const pubs = (it.developers || []).map((d) => d.name + (d.original ? "（" + d.original + "）" : "")).filter(Boolean);
     $("detailPub").textContent = "出版社 / 开发商：" + (pubs.length ? pubs.join("；") : "暂无");
     $("detailTags").textContent = "其它高权重标签：" + (it.topText || "暂无");
-    $("detailLink").textContent = it.url || "";
+    $("detailLink").textContent = "";
     $("detailDesc").textContent = it.description || "（无简介）";
+    $("detailSites").innerHTML = "";
+    $("detailPages").innerHTML = "";
+    $("detailLoading").textContent = "正在读取鲲、TouchGal 和真红小站的参考页…";
+    $("detailLoading").classList.remove("hidden");
+    if (it.url) {
+      const vndb = document.createElement("button");
+      vndb.type = "button";
+      vndb.className = "btn";
+      vndb.textContent = "VNDB 作品页";
+      vndb.addEventListener("click", () => openExternal(it.url));
+      $("detailLink").appendChild(vndb);
+    }
     $("detail").classList.remove("hidden");
+    const queries = [];
+    [it.original, it.title].forEach((text) => {
+      const cleaned = String(text || "").trim();
+      if (cleaned && queries.indexOf(cleaned) < 0) queries.push(cleaned);
+    });
+    const namePage = $("pageName");
+    const mustFind = namePage && !namePage.classList.contains("hidden")
+      ? !!($("nameMust") && $("nameMust").checked)
+      : !!($("mustFind") && $("mustFind").checked);
+    try {
+      const profile = {
+        kungal: await kunProfile(queries),
+        touchgal: await touchProfile(queries),
+        shinnku: await shinnkuPages(queries, mustFind)
+      };
+      if (seq !== detailSeq) return;
+      renderSitePages(profile);
+      $("detailLoading").classList.add("hidden");
+    } catch (err) {
+      if (seq !== detailSeq) return;
+      $("detailLoading").textContent = err.message || "参考页加载失败";
+    }
   }
 
   function selectedItems() {
@@ -876,14 +966,281 @@
     return hit;
   }
 
+  function workNames(work) {
+    const names = [];
+    if (!work || typeof work !== "object") return names;
+    ["display_name", "name", "latin"].forEach((key) => {
+      if (work[key]) names.push(String(work[key]));
+    });
+    const localized = work.localized || {};
+    Object.keys(localized).forEach((key) => {
+      const value = localized[key] && localized[key].value;
+      if (value) names.push(String(value));
+    });
+    return names.map((name) => name.trim()).filter(Boolean);
+  }
+
+  function pickWork(items, queries) {
+    const norms = queries.map(normName).filter(Boolean);
+    let best = null;
+    let bestRank = 0;
+    (items || []).forEach((work) => {
+      const blobs = workNames(work).map(normName);
+      let rank = 0;
+      norms.forEach((query) => {
+        blobs.forEach((blob) => {
+          if (!blob) return;
+          if (query === blob) rank = Math.max(rank, 3);
+          else if (query.indexOf(blob) >= 0 || blob.indexOf(query) >= 0) rank = Math.max(rank, 2);
+        });
+      });
+      if (rank > bestRank) { best = work; bestRank = rank; }
+    });
+    return best;
+  }
+
+  function introText(intros) {
+    if (!Array.isArray(intros)) return "";
+    const byLocale = {};
+    intros.forEach((row) => {
+      if (row && row.value) byLocale[String(row.locale || "")] = String(row.value).trim();
+    });
+    const order = ["zh-Hans", "zh-CN", "zh", "zh-Hant", "ja", "en"];
+    for (let i = 0; i < order.length; i++) {
+      if (byLocale[order[i]]) return byLocale[order[i]];
+    }
+    const values = Object.keys(byLocale).map((key) => byLocale[key]).filter(Boolean);
+    return values[0] || "";
+  }
+
+  function tagNames(tags) {
+    const names = [];
+    if (!Array.isArray(tags)) return names;
+    tags.forEach((tag) => {
+      if (typeof tag === "string" && tag.trim()) names.push(tag.trim());
+      else if (tag && typeof tag === "object") {
+        const label = tag.display_name || tag.name || tag.zh || "";
+        if (String(label).trim()) names.push(String(label).trim());
+      }
+    });
+    return names.filter((name, index) => names.indexOf(name) === index).slice(0, 30);
+  }
+
+  async function lookupKunScore(keyword) {
+    try {
+      const res = await httpGet(
+        "https://www.kungal.com/api/v1/search/works?q=" + encodeURIComponent(keyword) + "&page=1&limit=8&include_nsfw=true",
+        { Accept: "application/json" }
+      );
+      const data = JSON.parse(res.body || "{}");
+      const work = pickWork(data.items || [], [keyword]);
+      const score = work ? asTen(work.rating_score) : null;
+      if (!work || score == null) return { ok: false, reason: "没有对应评分" };
+      return { ok: true, score: score, votes: work.rating_count, name: (workNames(work)[0] || "") };
+    } catch (e) {
+      return { ok: false, reason: "站点暂时连不上" };
+    }
+  }
+
+  async function kunProfile(queries) {
+    if (!queries.length) return { ok: false, reason: "没有作品名" };
+    try {
+      const res = await httpGet(
+        "https://www.kungal.com/api/v1/search/works?q=" + encodeURIComponent(queries[0]) + "&page=1&limit=8&include_nsfw=true",
+        { Accept: "application/json" }
+      );
+      const data = JSON.parse(res.body || "{}");
+      const work = pickWork(data.items || [], queries);
+      if (!work || !work.id) return { ok: false, reason: "鲲没有匹配到这部作品" };
+      let source = work;
+      try {
+        const detail = await httpGet("https://www.kungal.com/api/v1/works/" + encodeURIComponent(work.id), { Accept: "application/json" });
+        const parsed = JSON.parse(detail.body || "{}");
+        if (parsed && typeof parsed === "object" && parsed.id) source = parsed;
+      } catch (e) {}
+      return {
+        ok: true,
+        name: workNames(source)[0] || "",
+        score: asTen(source.rating_score),
+        intro: introText(source.intros),
+        tags: tagNames(source.tags),
+        page: "https://www.kungal.com/galgame/" + work.id
+      };
+    } catch (e) {
+      return { ok: false, reason: "鲲站点暂时连不上" };
+    }
+  }
+
+  async function touchProfile(queries) {
+    const token = (Android.getPref("touchgal_token") || "").trim();
+    if (!token) return { ok: false, reason: "未配置 TouchGal Token" };
+    const keyword = queries[0] || "";
+    if (keyword.length < 3) return { ok: false, reason: "关键词太短，TouchGal 不接受" };
+    try {
+      const res = await httpGet(
+        "https://developer.touchgal.com/api/v1/games/search?keyword=" + encodeURIComponent(keyword) + "&page=1&limit=8&allowNsfw=true",
+        { Accept: "application/json", Authorization: "Bearer " + token }
+      );
+      const data = JSON.parse(res.body || "{}");
+      const items = (data.data && data.data.items) || data.items || [];
+      const game = pickWork(items, queries);
+      if (!game) return { ok: false, reason: "TouchGal 没有匹配到这部作品" };
+      const uniqueId = game.uniqueId || game.id || "";
+      let detail = game;
+      if (uniqueId) {
+        try {
+          const fetched = await httpGet("https://developer.touchgal.com/api/v1/games/" + encodeURIComponent(uniqueId), {
+            Accept: "application/json",
+            Authorization: "Bearer " + token
+          });
+          const parsed = JSON.parse(fetched.body || "{}");
+          detail = (parsed.data && typeof parsed.data === "object") ? parsed.data : parsed;
+        } catch (e) {}
+      }
+      let intro = "";
+      ["introduction", "intro", "description", "summary", "content"].some((key) => {
+        const value = detail && detail[key];
+        if (typeof value === "string" && value.trim()) { intro = value.trim(); return true; }
+        return false;
+      });
+      return {
+        ok: true,
+        name: (detail && detail.name) || game.name || "",
+        score: asTen(detail && detail.rating),
+        intro: intro,
+        tags: tagNames(detail && detail.tags),
+        page: uniqueId ? ("https://www.touchgal.ink/" + uniqueId) : ""
+      };
+    } catch (e) {
+      const msg = String(e && e.message || e);
+      if (/401|403/.test(msg)) return { ok: false, reason: "TouchGal Token 无效或被拦截" };
+      return { ok: false, reason: "TouchGal 暂时连不上" };
+    }
+  }
+
+  function hasKana(text) {
+    return /[\u3040-\u30ff\u4e00-\u9fff]/.test(text || "");
+  }
+
+  function addTerm(terms, text) {
+    const cleaned = String(text || "").replace(/\s+/g, " ").trim();
+    if (normName(cleaned).length < 2 || terms.indexOf(cleaned) >= 0) return;
+    terms.push(cleaned);
+  }
+
+  function shinnkuTerms(queries, mustFind) {
+    const japanese = queries.filter(hasKana);
+    const others = queries.filter((text) => japanese.indexOf(text) < 0);
+    const terms = [];
+    japanese.concat(others).forEach((text) => addTerm(terms, text));
+    const source = japanese[0] || queries[0] || "";
+    const chars = Array.from(source);
+    const count = chars.length;
+    if (count >= 4) {
+      const half = Math.max(2, Math.floor(count / 2));
+      addTerm(terms, chars.slice(0, half).join(""));
+      const middle = Math.max(0, Math.floor((count - half) / 2));
+      addTerm(terms, chars.slice(middle, middle + half).join(""));
+      addTerm(terms, chars.slice(count - half).join(""));
+      const quarter = Math.max(2, Math.floor(count / 4));
+      const rounds = mustFind ? 8 : 4;
+      for (let i = 0; i < rounds; i++) {
+        if (count <= quarter) { addTerm(terms, source); break; }
+        const start = Math.floor(Math.random() * (count - quarter + 1));
+        addTerm(terms, chars.slice(start, start + quarter).join(""));
+      }
+    }
+    return terms.slice(0, mustFind ? 12 : 8);
+  }
+
+  function decodePart(text) {
+    try { return decodeURIComponent(text); } catch (e) { return text; }
+  }
+
+  function shinnkuEntry(url, fragment) {
+    const frag = normName(fragment);
+    if (!frag || String(url).toLowerCase().indexOf("magnet:") === 0) return "";
+    const bare = String(url).split("?")[0];
+    const pieces = bare.split("/").filter(Boolean);
+    let prefix = "https://www.shinnku.com";
+    let segments = pieces;
+    if (bare.indexOf("http") === 0) {
+      prefix = bare.split("://")[0] + "://" + pieces[0];
+      segments = pieces.slice(1);
+    }
+    let decoded = segments.map(decodePart);
+    if (decoded.length && /\.[A-Za-z0-9]{1,5}$/.test(decoded[decoded.length - 1])) {
+      decoded = decoded.slice(0, -1);
+      segments = segments.slice(0, -1);
+    }
+    for (let index = decoded.length - 1; index >= 0; index--) {
+      if (normName(decoded[index]).indexOf(frag) >= 0) {
+        return prefix + "/" + segments.slice(0, index + 1).join("/") + "/";
+      }
+    }
+    return "";
+  }
+
+  async function searchShinnkuOnce(keyword) {
+    try {
+      const res = await httpGet("https://www.shinnku.com/search?q=" + encodeURIComponent(keyword), {
+        Accept: "text/html",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"
+      });
+      const html = res.body || "";
+      const re = /hover:underline" href="([^"]+)">\s*([^<]+?)\s*<\/a>/gi;
+      const searchPage = "https://www.shinnku.com/search?q=" + encodeURIComponent(keyword);
+      const found = [];
+      const seen = {};
+      let match;
+      while ((match = re.exec(html)) && found.length < 5) {
+        const href = match[1].trim();
+        const name = match[2].replace(/\s+/g, " ").trim();
+        if (href.toLowerCase().indexOf("magnet:") === 0) continue;
+        const url = href.indexOf("http") === 0 ? href : ("https://www.shinnku.com" + (href.charAt(0) === "/" ? href : "/" + href));
+        if (normName(name + " " + decodePart(url)).indexOf(normName(keyword)) < 0) continue;
+        const folder = shinnkuEntry(url, keyword);
+        const page = folder || searchPage;
+        const label = name || keyword;
+        const key = page + "|" + label;
+        if (seen[key]) continue;
+        seen[key] = 1;
+        found.push({ name: label, page: page });
+      }
+      return found;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  async function shinnkuPages(queries, mustFind) {
+    const terms = shinnkuTerms(queries, mustFind);
+    if (!terms.length) return { ok: false, reason: "没有可用于真红小站的名字", pages: [] };
+    const pages = [];
+    const seen = {};
+    let tried = 0;
+    for (let i = 0; i < terms.length && pages.length < 3; i++) {
+      tried += 1;
+      const hits = await searchShinnkuOnce(terms[i]);
+      hits.forEach((item) => {
+        const marker = normName(item.name);
+        if (!marker || seen[marker] || pages.length >= 3) return;
+        seen[marker] = 1;
+        pages.push(item);
+      });
+    }
+    if (!pages.length) {
+      return { ok: false, reason: "真红小站搜了 " + tried + " 次日文或英文片段，仍没有对上的目录", pages: [] };
+    }
+    return { ok: true, name: pages[0].name, page: pages[0].page, pages: pages, intro: "", tags: [] };
+  }
+
   async function lookupSite(kind, keyword) {
     const headers = { Accept: "application/json", "User-Agent": "VNDB-Searcher/1.0 (Android; author: yulibaitiao)" };
-    const token = Android.getPref(kind === "kungal" ? "kungal_token" : "touchgal_token") || "";
+    const token = Android.getPref("touchgal_token") || "";
     if (token) headers.Authorization = "Bearer " + token;
-    const urls = kind === "kungal"
-      ? ["https://www.kungal.com/api/galgame", "https://www.kungal.com/api/search"]
-      : ["https://www.touchgal.io/api/galgame"];
-    const keys = kind === "kungal" ? ["keywords", "q"] : ["q", "keywords"];
+    const urls = ["https://www.touchgal.io/api/galgame"];
+    const keys = ["q", "keywords"];
     for (let u = 0; u < urls.length; u++) {
       for (let i = 0; i < keys.length; i++) {
         const params = keys[i] + "=" + encodeURIComponent(keyword) + "&limit=5&page=1";
@@ -910,7 +1267,7 @@
       let kun = { ok: false, reason: "无标题" };
       let touch = { ok: false, reason: "无标题" };
       if (q) {
-        kun = await lookupSite("kungal", keyword);
+        kun = await lookupKunScore(keyword);
         touch = await lookupSite("touchgal", keyword);
       }
       it.community = { kungal: kun, touchgal: touch };
@@ -1243,15 +1600,7 @@
       desc.textContent = it.description || "";
       body.append(h, meta, desc);
       card.appendChild(body);
-      card.addEventListener("click", () => {
-        $("detailTitle").textContent = it.title || "作品";
-        $("detailMeta").textContent = meta.textContent;
-        $("detailPub").textContent = "";
-        $("detailTags").textContent = it.topText || "";
-        $("detailLink").textContent = it.url || "";
-        $("detailDesc").textContent = it.description || "";
-        $("detail").classList.remove("hidden");
-      });
+      card.addEventListener("click", () => openDetail(it));
       box.appendChild(card);
     });
   }
@@ -1324,7 +1673,6 @@
       const key = $("apiKey").value.trim();
       if (key.length < 8) { toast("请填入有效的 API Key"); return; }
       Android.setApiKey(key);
-      Android.setPref("kungal_token", $("kunToken").value.trim());
       Android.setPref("touchgal_token", $("touchToken").value.trim());
       state.apiKey = key;
       showMain(true);
@@ -1335,12 +1683,10 @@
     });
     $("openTutorial").addEventListener("click", () => $("tutorial").classList.remove("hidden"));
     $("openAbout").addEventListener("click", () => {
-      $("kunToken2").value = Android.getPref("kungal_token") || "";
       $("touchToken2").value = Android.getPref("touchgal_token") || "";
       $("about").classList.remove("hidden");
     });
     $("aboutClose").addEventListener("click", () => {
-      Android.setPref("kungal_token", $("kunToken2").value.trim());
       Android.setPref("touchgal_token", $("touchToken2").value.trim());
       $("about").classList.add("hidden");
     });
