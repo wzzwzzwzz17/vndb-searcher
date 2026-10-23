@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>VNDB搜索器</title>
+  <style>/*__CSS__*/</style>
+</head>
+<body>
+  <section id="setup" class="screen-setup hidden">
+    <div class="card setup-card">
+      <svg class="mascot" viewBox="0 0 64 64" aria-hidden="true">
+        <ellipse cx="32" cy="36" rx="18" ry="16" fill="#FFE3EC"/>
+        <path d="M18 28c-6-12 0-18 8-12 3 2 4 7 3 11" fill="#FF8FAB"/>
+        <path d="M46 28c6-12 0-18-8-12-3 2-4 7-3 11" fill="#FF8FAB"/>
+        <circle cx="26" cy="36" r="2.2" fill="#4A3140"/>
+        <circle cx="38" cy="36" r="2.2" fill="#4A3140"/>
+        <path d="M28 43c2 3 6 3 8 0" fill="none" stroke="#E85D84" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <h1>VNDB搜索器</h1>
+      <p class="hint">制作者：雨里百跳（代号）</p>
+      <p>先填好 DeepSeek API Key，才能把你的描述变成 VNDB 检索条件。Key 只保存在这台手机里。</p>
+      <label class="field" for="apiKey">DeepSeek API Key</label>
+      <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
+      <p class="hint">可在 DeepSeek 开放平台创建。不会上传到本应用作者的服务器。</p>
+      <div class="actions">
+        <button id="saveKey" class="btn-main" type="button">保存并继续</button>
+      </div>
+    </div>
+  </section>
+
+  <main id="main" class="app hidden">
+    <header class="top">
+      <svg class="mascot" viewBox="0 0 64 64" aria-hidden="true">
+        <ellipse cx="32" cy="36" rx="18" ry="16" fill="#FFE3EC"/>
+        <path d="M18 28c-6-12 0-18 8-12 3 2 4 7 3 11" fill="#FF8FAB"/>
+        <path d="M46 28c6-12 0-18-8-12-3 2-4 7-3 11" fill="#FF8FAB"/>
+        <circle cx="26" cy="36" r="2.2" fill="#4A3140"/>
+        <circle cx="38" cy="36" r="2.2" fill="#4A3140"/>
+        <path d="M28 43c2 3 6 3 8 0" fill="none" stroke="#E85D84" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <div class="brand">
+        <h1>VNDB搜索器</h1>
+        <p>雨里百跳 · 用自然语言找高分视觉小说</p>
+      </div>
+      <div class="ghost-row">
+        <button id="openTutorial" class="btn" type="button">教程</button>
+        <button id="openAbout" class="btn" type="button">关于</button>
+      </div>
+    </header>
+
+    <section class="card">
+      <label class="field" for="desc">你想找什么样的作品？</label>
+      <textarea id="desc"></textarea>
+      <p class="hint">请保留开头「这是我想要的galgame描述：」，后面写偏好即可。例如：校园、日常、有H、高分。</p>
+    </section>
+
+    <section class="card">
+      <h2>搜索方式</h2>
+      <div class="modes" id="modes"></div>
+      <div class="row" style="margin-top:12px">
+        <span>发售不早于</span>
+        <div class="stepper">
+          <button id="yearMinus" type="button" aria-label="减少年份">−</button>
+          <input id="year" class="year-num" type="number" min="1980" max="2035" value="2005" />
+          <button id="yearPlus" type="button" aria-label="增加年份">+</button>
+        </div>
+        <span>年</span>
+      </div>
+      <label class="check" style="margin-top:12px">
+        <input id="singleCore" type="checkbox" />
+        只按一个核心标签搜索
+      </label>
+      <p class="hint" id="modeHint"></p>
+    </section>
+
+    <section class="card">
+      <button id="btnNew" class="btn-main" type="button">开始新一轮搜索</button>
+      <div class="btn-grid">
+        <button id="btnRefresh" class="btn" type="button">刷新结果</button>
+        <button id="btnOptimize" class="btn" type="button">优化上轮分析</button>
+        <button id="btnFavAdd" class="btn" type="button">加入收藏夹</button>
+        <button id="btnFavOpen" class="btn" type="button">打开收藏夹</button>
+      </div>
+      <p class="hint" id="sessionLine">还没有进行中的一轮。点「开始新一轮搜索」即可。</p>
+    </section>
+
+    <section class="card">
+      <h2>这一轮</h2>
+      <div id="summary" class="summary">配置完成后，在上面写下描述再搜索。</div>
+    </section>
+
+    <section class="card">
+      <h2>结果</h2>
+      <p class="hint">勾选后可收藏。点「查看详情」看中文简介和出版社。双击卡片也可以。</p>
+      <div id="results"></div>
+    </section>
+
+    <footer class="footer">
+      查询作品需要能访问 api.vndb.org。国内网络通常要打开 VPN（梯子）。DeepSeek 一般可直连。标签库已内置在应用里。
+    </footer>
+  </main>
+
+  <div id="tutorial" class="modal hidden">
+    <div class="sheet">
+      <h2>三分钟就会用</h2>
+      <ol>
+        <li>描述必须以「这是我想要的galgame描述：」开头。</li>
+        <li>选一种找法：总质量看高分；内容权重看标签够不够浓；硬核要求更严，可能没有结果。</li>
+        <li>年份用来挡住太老的作品。勾选「只按一个核心标签」时，只拿最关键的那一个标签去搜。</li>
+        <li>「刷新结果」会尽量换一批，不重复刚才看过的。「优化上轮分析」用来补充或改掉上一句需求。</li>
+        <li>结果里的简介是中文。每部还会列出权重最高的 4 个其它标签（不含这次用来搜索的标签）。</li>
+        <li>本应用只查 VNDB 上的作品资料，不提供下载。</li>
+      </ol>
+      <div class="actions">
+        <button id="tutorialOk" class="btn-main" type="button">知道了，开始用</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="about" class="modal hidden">
+    <div class="sheet">
+      <h2>关于 VNDB搜索器</h2>
+      <p>制作者：雨里百跳（代号）</p>
+      <h2>注意事项</h2>
+      <ul>
+        <li>只查询 VNDB 公开元数据：名称、评分、简介、标签、链接、开发商。没有资源、没有下载。</li>
+        <li>请遵守 VNDB API 使用条款（非商业、有频率限制）。请勿短时间连续狂点搜索。</li>
+        <li>成人向标签来自 VNDB 官方分类。请自行遵守所在地法律。</li>
+        <li>DeepSeek Key 存在本机，用于把自然语言变成筛选条件，并翻译简介和标签。</li>
+        <li>内置约 3000 个官方标签，所以匹配标签本身不需要先连上 VNDB。真正列出作品时仍要访问 VNDB，国内通常需要 VPN。</li>
+        <li>硬核模式允许找不到作品，不会为了凑结果把条件放得很松。</li>
+      </ul>
+      <h2>借鉴与参考</h2>
+      <ul>
+        <li>VNDB 网站：https://vndb.org/</li>
+        <li>VNDB API v2（Kana）：https://api.vndb.org/kana</li>
+        <li>参考项目：https://github.com/wzzwzzwzz17/VndbSharp</li>
+        <li>本地方案说明：Galgame 推荐系统 VNDB 集成方案（本项目文档）</li>
+      </ul>
+      <div class="actions">
+        <button id="aboutClose" class="btn-main" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="optimize" class="modal hidden">
+    <div class="sheet">
+      <h2>优化上轮分析</h2>
+      <p class="hint">改一句或补一句。程序会在上一轮标签上增加或减少，而不是把进度丢掉。</p>
+      <textarea id="optText"></textarea>
+      <div class="actions">
+        <button id="optCancel" class="btn" type="button">取消</button>
+        <button id="optOk" class="btn-main" type="button">按这个重搜</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="detail" class="modal hidden">
+    <div class="sheet">
+      <h2 id="detailTitle">作品</h2>
+      <p id="detailMeta" class="meta"></p>
+      <p id="detailPub"></p>
+      <p id="detailTags"></p>
+      <p id="detailLink" class="meta"></p>
+      <h2>剧情简介</h2>
+      <div id="detailDesc" class="summary"></div>
+      <div class="actions">
+        <button id="detailClose" class="btn-main" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="favs" class="modal hidden">
+    <div class="sheet">
+      <h2>收藏夹</h2>
+      <p class="hint">存在本机，不上传。</p>
+      <div id="favList"></div>
+      <div class="actions">
+        <button id="favClose" class="btn-main" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirm" class="modal hidden">
+    <div class="sheet">
+      <h2 id="confirmTitle">请确认</h2>
+      <p id="confirmText"></p>
+      <div class="actions">
+        <button id="confirmNo" class="btn" type="button">先留着</button>
+        <button id="confirmYes" class="btn-main" type="button">确定开始</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script>/*__JS__*/</script>
+</body>
+</html>
