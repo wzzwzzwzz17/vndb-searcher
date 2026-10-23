@@ -9,7 +9,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-SKILL = os.path.abspath(os.path.join(ROOT, "..", "vn_ai_skill"))
+SKILL = os.path.abspath(os.path.join(ROOT, "..", "desktop"))
 if SKILL not in sys.path:
     sys.path.insert(0, SKILL)
 
