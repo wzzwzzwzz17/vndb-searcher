@@ -132,22 +132,24 @@
       });
       const data = await res.json();
       $("mLoading").classList.add("hidden");
-      ["kungal", "touchgal", "shinnku"].forEach((key) => {
+      ["kungal", "touchgal", "shinnku", "ggbase"].forEach((key) => {
         const row = data[key] || {};
         const box = document.createElement("section");
         const h = document.createElement("h3");
-        h.textContent = {kungal:"鲲 Galgame", touchgal:"TouchGal", shinnku:"真红小站"}[key];
+        h.textContent = {kungal:"鲲 Galgame", touchgal:"TouchGal", shinnku:"真红小站", ggbase:"GGBase"}[key];
         box.appendChild(h);
         const p = document.createElement("p");
-        p.textContent = row.ok ? ((row.tags || []).join("、") || "没有标签") : (row.reason || "没有资料");
+        if (key === "ggbase") p.textContent = row.ok ? "按栏目标题相似度取前 3 个栏目页。" : (row.reason || "没有资料");
+        else p.textContent = row.ok ? ((row.tags || []).join("、") || "没有标签") : (row.reason || "没有资料");
         box.appendChild(p);
         if (row.intro) {
           const intro = document.createElement("p");
           intro.textContent = row.intro;
           box.appendChild(intro);
         }
-        (row.pages || (row.page ? [{name: row.name || "参考页", page: row.page}] : [])).forEach((item) => {
+        (row.pages || (row.page ? [{name: row.name || "参考页", page: row.page}] : [])).slice(0, key === "ggbase" ? 3 : 99).forEach((item) => {
           if (!item.page) return;
+          if (key === "ggbase" && !/https:\/\/www\.ggbases\.com\/view\.so\?id=\d+$/.test(item.page)) return;
           const a = document.createElement("a");
           a.href = item.page;
           a.target = "_blank";

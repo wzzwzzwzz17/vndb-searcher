@@ -19,6 +19,7 @@ from community_scores import fetch_work_profile  # noqa: E402
 from name_lookup import lookup_name  # noqa: E402
 from tag_precision import load_tree, search_weighted_tags  # noqa: E402
 from tag_matcher import find_candidate_tags  # noqa: E402
+from ggbase import search_ggbase  # noqa: E402
 
 INDEX = os.path.join(ROOT, "index.html")
 NAME_PAGE = os.path.join(ROOT, "name.html")
@@ -155,6 +156,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json(200, {"items": [_slim(it) for it in items]})
             return
+        if path == "/api/ggbase":
+            try:
+                found = search_ggbase(payload.get("original") or "", payload.get("title") or "")
+            except Exception:  # noqa: BLE001
+                found = {"ok": False, "reason": "GGBase 暂时连不上", "pages": []}
+            self._json(200, found)
+            return
         if path == "/api/detail":
             profile = fetch_work_profile(
                 payload.get("title") or "",
@@ -162,6 +170,13 @@ class Handler(BaseHTTPRequestHandler):
                 payload.get("touchgal_token") or "",
                 bool(payload.get("must_find")),
             )
+            try:
+                profile["ggbase"] = search_ggbase(
+                    payload.get("original") or "",
+                    payload.get("title") or "",
+                )
+            except Exception:  # noqa: BLE001
+                profile["ggbase"] = {"ok": False, "reason": "GGBase 暂时连不上", "pages": []}
             self._json(200, profile)
             return
         if path != "/api/recommend":

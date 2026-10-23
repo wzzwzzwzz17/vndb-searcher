@@ -95,7 +95,7 @@ cd ..\web
 python server.py
 ```
 
-浏览器打开 `http://127.0.0.1:8787/`。顶部三个链接分别是 `/`、`/name`、`/tags`。
+浏览器打开 `http://127.0.0.1:8787/`。顶部三个链接分别是 `/`、`/name`、`/tags`。点开作品详情时，网页会额外查 GGBase 搜索页，只把栏目标题最接近的 3 个栏目页（`view.so?id=`）交给用户。这一步只在网页端，不进安卓包，也不返回磁力或压缩包地址。
 
 DeepSeek Key 可以写在页面上，也可以事先写进 `desktop/config.py` 或环境变量 `DEEPSEEK_API_KEY`。TouchGal Token 留空即可。端口和监听地址可用环境变量 `VNDB_WEB_PORT`、`VNDB_WEB_HOST` 改。
 

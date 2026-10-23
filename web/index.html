@@ -138,7 +138,7 @@
     <div class="sheet">
       <h2 id="mTitle">作品详情</h2>
       <p id="mMeta" class="meta"></p>
-      <p id="mLoading" class="meta">正在读取标签、简介，并用日文片段搜索真红小站…</p>
+      <p id="mLoading" class="meta">正在读取标签、简介，并查找真红小站和 GGBase 栏目页…</p>
       <div id="mBody"></div>
       <h3>参考页入口</h3>
       <div id="mPages" class="links"></div>
@@ -222,6 +222,34 @@
       }
     }
 
+    function ggbaseBlock(row) {
+      const box = document.createElement("section");
+      const h = document.createElement("h3");
+      h.textContent = "GGBase";
+      box.appendChild(h);
+      const note = document.createElement("p");
+      note.className = "meta";
+      note.textContent = "按栏目标题相似度取前 3 个栏目页。";
+      box.appendChild(note);
+      if (!row || !row.ok) {
+        const p = document.createElement("p");
+        p.className = "meta";
+        p.textContent = (row && row.reason) || "没有资料";
+        box.appendChild(p);
+        return box;
+      }
+      (row.pages || []).slice(0, 3).forEach((item) => {
+        if (!item.page || !/https:\/\/www\.ggbases\.com\/view\.so\?id=\d+$/.test(item.page)) return;
+        const a = document.createElement("a");
+        a.href = item.page;
+        a.target = "_blank";
+        a.rel = "noreferrer";
+        a.textContent = item.name || item.page;
+        box.appendChild(a);
+      });
+      return box;
+    }
+
     function siteBlock(title, row) {
       const box = document.createElement("section");
       const h = document.createElement("h3");
@@ -283,14 +311,16 @@
         $("mBody").append(
           siteBlock("鲲 Galgame", data.kungal),
           siteBlock("TouchGal", data.touchgal),
-          siteBlock("真红小站", data.shinnku)
+          siteBlock("真红小站", data.shinnku),
+          ggbaseBlock(data.ggbase)
         );
         const pages = $("mPages");
         pages.innerHTML = "";
         [
           ["鲲 Galgame", data.kungal],
           ["TouchGal", data.touchgal],
-          ["真红小站", data.shinnku]
+          ["真红小站", data.shinnku],
+          ["GGBase", data.ggbase]
         ].forEach(([label, row]) => {
           const list = (row && row.pages) || (row && row.page ? [{ name: row.name || label, page: row.page }] : []);
           list.forEach((item) => {
