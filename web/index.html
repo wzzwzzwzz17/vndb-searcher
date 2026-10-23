@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VNDB搜索器</title>
+  <style>
+    :root {
+      --bg: #f4f0ff;
+      --ink: #2d2440;
+      --muted: #7b6d90;
+      --card: rgba(255,255,255,.86);
+      --line: #eadff5;
+      --pink: #ff7aa2;
+      --deep: #6d5efc;
+      --shadow: 0 18px 50px rgba(80, 60, 140, .12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(900px 420px at 0% -10%, #ffe4f1 0%, transparent 60%),
+        radial-gradient(800px 380px at 100% 0%, #e7e4ff 0%, transparent 55%),
+        var(--bg);
+    }
+    .nav { display: flex; gap: 14px; padding-top: 18px; }
+    .nav a { color: var(--deep); font-weight: 800; text-decoration: none; }
+    header { padding: 28px 0 8px; display: grid; grid-template-columns: 280px 1fr; gap: 28px; align-items: center; }
+    .hero-copy h1 { margin: 0 0 8px; font-size: 40px; letter-spacing: -0.04em; }
+    .hero-copy p { margin: 0; color: var(--muted); font-size: 16px; max-width: 46ch; }
+    .panel, .card, .sheet {
+      background: var(--card);
+      border: 1px solid rgba(255,255,255,.7);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+    .panel { padding: 22px; margin: 18px 0; }
+    label { display: block; font-weight: 700; margin-bottom: 8px; }
+    textarea, input[type="number"], input[type="password"] {
+      width: 100%; border: 1.5px solid var(--line); border-radius: 16px;
+      padding: 12px 14px; font: inherit; color: inherit; background: #fff;
+    }
+    textarea { min-height: 96px; resize: vertical; }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .modes { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0; }
+    .mode {
+      border: 1.5px solid var(--line); background: #fff; border-radius: 999px;
+      padding: 8px 14px; cursor: pointer; font-weight: 700;
+    }
+    .mode.active { background: #2d2440; color: white; border-color: #2d2440; }
+    .checks { display: flex; gap: 16px; color: var(--muted); font-size: 14px; }
+    button.primary, button.ghost {
+      border: 0; border-radius: 999px; min-height: 46px; padding: 0 18px;
+      font-weight: 800; cursor: pointer; font: inherit;
+    }
+    button.primary { background: linear-gradient(90deg, var(--pink), var(--deep)); color: white; }
+    button.ghost { background: white; color: var(--deep); border: 1.5px solid #ddd4f7; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+    .card { padding: 16px; cursor: pointer; }
+    .card.selected { outline: 3px solid #c9b8ff; }
+    .card h3 { margin: 0 0 6px; }
+    .meta, .desc { color: var(--muted); font-size: 14px; }
+    .desc { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+    .scores { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+    .scores span { background: #f6f1ff; border-radius: 999px; padding: 3px 8px; font-size: 12px; }
+    .status { min-height: 24px; color: var(--muted); }
+    .modal {
+      position: fixed; inset: 0; background: rgba(32, 24, 48, .35);
+      display: flex; align-items: flex-end; justify-content: center; padding: 16px;
+    }
+    .sheet { width: min(720px, 100%); padding: 22px; max-height: 80vh; overflow: auto; }
+    .hidden { display: none; }
+    .links a { display: block; margin: 8px 0; color: var(--deep); font-weight: 700; }
+    footer { color: var(--muted); font-size: 13px; padding: 10px 0 28px; }
+    @media (max-width: 800px) { header { grid-template-columns: 1fr; } .hero-copy h1 { font-size: 32px; } }
+  </style>
+</head>
+<body>
+    <div class="wrap">
+    <nav class="nav">
+      <a href="/">自然语言推荐</a>
+      <a href="/name">名称精确搜索</a>
+      <a href="/tags">高精度标签搜索</a>
+    </nav>
+    <header>
+      <svg viewBox="0 0 280 220" role="img" aria-label="一个在窗边看书的小角色">
+        <rect width="280" height="220" rx="36" fill="#fff"/>
+        <path d="M0 150c40-30 70-20 110-40s70 10 170-20v130H0z" fill="#efe7ff"/>
+        <circle cx="210" cy="48" r="18" fill="#ffe08a"/>
+        <rect x="78" y="58" width="92" height="70" rx="16" fill="#d9dcff"/>
+        <rect x="88" y="68" width="72" height="46" rx="10" fill="#9fd7ff"/>
+        <circle cx="150" cy="150" r="28" fill="#ffd6e4"/>
+        <path d="M132 138c-10-16 2-24 12-16 4 3 6 8 4 14" fill="#ff7aa2"/>
+        <path d="M168 138c10-16-2-24-12-16-4 3-6 8-4 14" fill="#ff7aa2"/>
+        <circle cx="142" cy="150" r="3" fill="#2d2440"/>
+        <circle cx="158" cy="150" r="3" fill="#2d2440"/>
+        <path d="M146 160c3 4 8 4 11 0" fill="none" stroke="#e85d84" stroke-width="2" stroke-linecap="round"/>
+        <rect x="118" y="176" width="36" height="22" rx="4" fill="#fff" stroke="#d9c7ef"/>
+      </svg>
+      <div class="hero-copy">
+        <h1>VNDB搜索器</h1>
+        <p>先用自然语言和 VNDB 标签找出作品，再同时看 VNDB、鲲 Galgame、TouchGal 的评分。点开作品可加载两边的标签和中文简介。</p>
+      </div>
+    </header>
+
+    <section class="panel">
+      <label for="desc">想找什么样的作品</label>
+      <textarea id="desc" placeholder="校园、日常、高分、不要太短"></textarea>
+      <div class="modes" id="modes">
+        <button class="mode active" type="button" data-mode="quality">总质量优先</button>
+        <button class="mode" type="button" data-mode="content">内容权重优先</button>
+        <button class="mode" type="button" data-mode="hardcore">硬核内容要求</button>
+      </div>
+      <div class="row">
+        <label for="year" style="margin:0">不早于</label>
+        <input id="year" type="number" min="1980" max="2035" value="2005" style="width:110px" />
+        <span>年</span>
+        <label class="checks"><input id="single" type="checkbox" /> 只按一个核心标签</label>
+        <label class="checks"><input id="mustFind" type="checkbox" /> 必须搜中（真红小站用更短的日文片段多搜几次）</label>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button id="go" class="primary" type="button">开始推荐</button>
+        <input id="key" type="password" placeholder="DeepSeek Key，留空则用服务器配置" style="max-width:280px" />
+        <input id="touchToken" type="password" placeholder="TouchGal Token 先留空，以后再填" style="max-width:260px" />
+      </div>
+      <p id="status" class="status"></p>
+    </section>
+
+    <section id="grid" class="grid"></section>
+    <footer>雨里百跳 · 点开卡片可看标签、简介和参考页入口。国内访问 VNDB 通常需要 VPN。</footer>
+  </div>
+
+  <div id="modal" class="modal hidden">
+    <div class="sheet">
+      <h2 id="mTitle">作品详情</h2>
+      <p id="mMeta" class="meta"></p>
+      <p id="mLoading" class="meta">正在读取标签、简介，并用日文片段搜索真红小站…</p>
+      <div id="mBody"></div>
+      <h3>参考页入口</h3>
+      <div id="mPages" class="links"></div>
+      <p class="meta">这里是作品参考页，不是压缩包或磁力链接。</p>
+      <button id="close" class="primary" type="button">关闭</button>
+    </div>
+  </div>
+
+  <script>
+    const state = { mode: "quality", items: [], selected: -1 };
+    const $ = (id) => document.getElementById(id);
+    document.getElementById("modes").addEventListener("click", (e) => {
+      const btn = e.target.closest(".mode");
+      if (!btn) return;
+      state.mode = btn.dataset.mode;
+      document.querySelectorAll(".mode").forEach((el) => el.classList.toggle("active", el === btn));
+    });
+    $("go").addEventListener("click", search);
+    $("close").addEventListener("click", () => $("modal").classList.add("hidden"));
+
+    function scoreBits(it) {
+      const v = typeof it.rating === "number" ? it.rating.toFixed(2) : "—";
+      const site = (row, name) => row && row.ok ? name + " " + Number(row.score).toFixed(2) : name + " —";
+      const c = it.community || {};
+      const mix = typeof it.composite === "number" ? it.composite.toFixed(2) : "—";
+      return "VNDB " + v + " · " + site(c.kungal, "鲲") + " · " + site(c.touchgal, "TouchGal") + " · 综合 " + mix;
+    }
+
+    function render() {
+      const grid = $("grid");
+      grid.innerHTML = "";
+      state.items.forEach((it, i) => {
+        const card = document.createElement("article");
+        card.className = "card" + (state.selected === i ? " selected" : "");
+        const h = document.createElement("h3");
+        h.textContent = it.title || "（无标题）";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = (it.original || "无原名") + " · " + (it.released || "日期未知");
+        const scores = document.createElement("div");
+        scores.className = "scores";
+        scoreBits(it).split(" · ").forEach((text) => {
+          const s = document.createElement("span");
+          s.textContent = text;
+          scores.appendChild(s);
+        });
+        const desc = document.createElement("p");
+        desc.className = "desc";
+        desc.textContent = it.description || "";
+        card.append(h, meta, scores, desc);
+        card.addEventListener("click", () => openDetail(it));
+        grid.appendChild(card);
+      });
+    }
+
+    async function search() {
+      $("go").disabled = true;
+      $("status").textContent = "正在按标签和评分查找…";
+      try {
+        const res = await fetch("/api/recommend", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: $("desc").value.trim(),
+            mode: state.mode,
+            year: Number($("year").value) || 2005,
+            single_core: $("single").checked,
+            api_key: $("key").value.trim(),
+            touchgal_token: $("touchToken").value.trim()
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "搜索失败");
+        state.items = data.items || [];
+        $("status").textContent = (data.tag_line ? "标签：" + data.tag_line + "。 " : "") + "共 " + state.items.length + " 部，已按综合分排序。";
+        render();
+      } catch (err) {
+        $("status").textContent = err.message || String(err);
+      } finally {
+        $("go").disabled = false;
+      }
+    }
+
+    function siteBlock(title, row) {
+      const box = document.createElement("section");
+      const h = document.createElement("h3");
+      h.textContent = title;
+      box.appendChild(h);
+      if (!row || !row.ok) {
+        const p = document.createElement("p");
+        p.className = "meta";
+        p.textContent = (row && row.reason) || "没有资料";
+        box.appendChild(p);
+        return box;
+      }
+      if (row.page) {
+        const a = document.createElement("a");
+        a.href = row.page;
+        a.target = "_blank";
+        a.rel = "noreferrer";
+        a.textContent = "参考页";
+        box.appendChild(a);
+      }
+      const tags = document.createElement("div");
+      tags.className = "scores";
+      (row.tags || []).forEach((name) => {
+        const s = document.createElement("span");
+        s.textContent = name;
+        tags.appendChild(s);
+      });
+      if (!(row.tags || []).length) {
+        const empty = document.createElement("p");
+        empty.className = "meta";
+        empty.textContent = "没有标签";
+        box.appendChild(empty);
+      } else box.appendChild(tags);
+      const intro = document.createElement("p");
+      intro.textContent = row.intro || "没有中文简介";
+      box.appendChild(intro);
+      return box;
+    }
+
+    async function openDetail(it) {
+      $("mTitle").textContent = it.title || "作品详情";
+      $("mMeta").textContent = (it.original || "") + " · " + scoreBits(it);
+      $("mLoading").classList.remove("hidden");
+      $("mBody").innerHTML = "";
+      $("modal").classList.remove("hidden");
+      try {
+        const res = await fetch("/api/detail", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: it.title || "",
+            original: it.original || "",
+            touchgal_token: $("touchToken").value.trim(),
+            must_find: $("mustFind").checked
+          })
+        });
+        const data = await res.json();
+        $("mLoading").classList.add("hidden");
+        $("mBody").append(
+          siteBlock("鲲 Galgame", data.kungal),
+          siteBlock("TouchGal", data.touchgal),
+          siteBlock("真红小站", data.shinnku)
+        );
+        const pages = $("mPages");
+        pages.innerHTML = "";
+        [
+          ["鲲 Galgame", data.kungal],
+          ["TouchGal", data.touchgal],
+          ["真红小站", data.shinnku]
+        ].forEach(([label, row]) => {
+          const list = (row && row.pages) || (row && row.page ? [{ name: row.name || label, page: row.page }] : []);
+          list.forEach((item) => {
+            if (!item.page) return;
+            const a = document.createElement("a");
+            a.href = item.page;
+            a.target = "_blank";
+            a.rel = "noreferrer";
+            a.textContent = label + " · " + (item.name || "参考页");
+            pages.appendChild(a);
+          });
+        });
+      } catch (err) {
+        $("mLoading").textContent = err.message || "详情加载失败";
+      }
+    }
+  </script>
+</body>
+</html>

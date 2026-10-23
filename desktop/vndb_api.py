@@ -54,8 +54,50 @@ class FilterValidationError(ValueError):
     pass
 
 
+def _repair_filter_node(node: Any) -> Any:
+    """把模型写错的标签条件改成 VNDB 要求的 [字段, 运算符, 值]。"""
+    if not isinstance(node, list) or not node:
+        return node
+    head = node[0]
+    if head in ("and", "or"):
+        children = []
+        for child in node[1:]:
+            fixed = _repair_filter_node(child)
+            if fixed is not None:
+                children.append(fixed)
+        if not children:
+            return None
+        if len(children) == 1 and head == "and":
+            return children[0]
+        if len(children) == 1:
+            return children[0]
+        return [head, *children]
+    if head == "not" and len(node) == 2:
+        inner = _repair_filter_node(node[1])
+        return ["not", inner] if inner is not None else None
+    if head in ("tag", "dtag") and len(node) == 4 and isinstance(node[1], str) and TAG_ID_RE.match(node[1]):
+        tag_id, op, level = node[1], node[2], node[3]
+        try:
+            level_n = float(level)
+        except (TypeError, ValueError):
+            level_n = 0
+        level_n = min(3.0, max(0.0, level_n))
+        if op == "!=":
+            return [head, "!=", tag_id]
+        return [head, "=", [tag_id, 0, level_n]]
+    if head == "rating" and len(node) == 3 and node[1] in (">=", ">", "<=", "<", "="):
+        try:
+            value = float(node[2])
+        except (TypeError, ValueError):
+            return node
+        if 0 < value <= 10:
+            value = value * 10
+        return [head, node[1], value]
+    return node
+
+
 def normalize_filters(filters: Any) -> Any:
-    """修复 LLM 常见失误：filters 被多包一层数组，如 [[\"and\", ...]]。"""
+    """修复 LLM 常见失误：多包一层，或把标签写成 [tag, gID, 运算符, 强度]。"""
     node = filters
     for _ in range(5):
         if (
@@ -71,7 +113,7 @@ def normalize_filters(filters: Any) -> Any:
             node = node[0]
             continue
         break
-    return node
+    return _repair_filter_node(node)
 
 
 def _validate_predicate(

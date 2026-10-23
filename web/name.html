@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>名称精确搜索 · VNDB搜索器</title>
+  <style>
+    :root { --bg:#f4f0ff; --ink:#2d2440; --muted:#7b6d90; --card:rgba(255,255,255,.9); --line:#eadff5; --pink:#ff7aa2; --deep:#6d5efc; --shadow:0 18px 50px rgba(80,60,140,.12); }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; background:radial-gradient(800px 320px at 0% 0%, #ffe4f1, transparent 60%), var(--bg); }
+    .wrap { width:min(980px, calc(100% - 32px)); margin:0 auto; padding-bottom:32px; }
+    .nav { display:flex; gap:14px; padding-top:18px; }
+    .nav a { color:var(--deep); font-weight:800; text-decoration:none; }
+    h1 { margin:12px 0 6px; }
+    p.lead, .meta { color:var(--muted); }
+    .panel, .card, .sheet { background:var(--card); border-radius:24px; box-shadow:var(--shadow); }
+    .panel { padding:18px; }
+    textarea, input { width:100%; border:1.5px solid var(--line); border-radius:14px; padding:12px; font:inherit; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px; }
+    button { border:0; border-radius:999px; min-height:44px; padding:0 16px; font:inherit; font-weight:800; cursor:pointer; }
+    .primary { background:linear-gradient(90deg, var(--pink), var(--deep)); color:white; }
+    .grid { display:grid; gap:12px; margin-top:16px; }
+    .card { padding:14px; cursor:pointer; }
+    .scores { display:flex; gap:6px; flex-wrap:wrap; }
+    .scores span { background:#f6f1ff; border-radius:999px; padding:3px 8px; font-size:12px; }
+    .modal { position:fixed; inset:0; background:rgba(32,24,48,.35); display:flex; align-items:flex-end; justify-content:center; padding:16px; }
+    .sheet { width:min(720px,100%); max-height:80vh; overflow:auto; padding:18px; }
+    .hidden { display:none; }
+    .links a { display:block; margin:6px 0; color:var(--deep); font-weight:700; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav class="nav">
+      <a href="/">自然语言推荐</a>
+      <a href="/name">名称精确搜索</a>
+      <a href="/tags">高精度标签搜索</a>
+    </nav>
+    <h1>名称精确搜索</h1>
+    <p class="lead">输入大致的中文、英文或日文作品名。会先查必应，再分析出可能的正式名称，然后用全名和日文片段到 VNDB、鲲、真红小站里找具体作品。</p>
+    <section class="panel">
+      <textarea id="name" placeholder="例如：被光守望的坡道，或 CLANNAD"></textarea>
+      <label class="meta"><input id="mustFind" type="checkbox" /> 必须搜中（真红小站用更短的日文片段多搜几次）</label>
+      <div class="row">
+        <button id="go" class="primary" type="button">开始查找</button>
+        <input id="key" type="password" placeholder="DeepSeek Key，留空则用服务器配置" style="max-width:280px" />
+      </div>
+      <p id="status" class="meta"></p>
+    </section>
+    <section id="grid" class="grid"></section>
+  </div>
+  <div id="modal" class="modal hidden">
+    <div class="sheet">
+      <h2 id="mTitle">作品详情</h2>
+      <p id="mLoading" class="meta">正在读取标签、简介和参考页…</p>
+      <div id="mBody"></div>
+      <button id="close" class="primary" type="button">关闭</button>
+    </div>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    $("close").addEventListener("click", () => $("modal").classList.add("hidden"));
+    $("go").addEventListener("click", search);
+
+    function bits(it) {
+      const v = typeof it.rating === "number" ? it.rating.toFixed(2) : "—";
+      const site = (row, name) => row && row.ok ? name + " " + Number(row.score).toFixed(2) : name + " —";
+      const c = it.community || {};
+      const mix = typeof it.composite === "number" ? it.composite.toFixed(2) : "—";
+      return "VNDB " + v + " · " + site(c.kungal, "鲲") + " · " + site(c.touchgal, "TouchGal") + " · 综合 " + mix;
+    }
+    function render(items) {
+      const grid = $("grid");
+      grid.innerHTML = "";
+      items.forEach((it) => {
+        const card = document.createElement("article");
+        card.className = "card";
+        const h = document.createElement("h3");
+        h.textContent = it.title || "（无标题）";
+        const meta = document.createElement("p");
+        meta.className = "meta";
+        meta.textContent = (it.original || "") + " · " + bits(it);
+        card.append(h, meta);
+        card.addEventListener("click", () => openDetail(it));
+        grid.appendChild(card);
+      });
+    }
+    async function search() {
+      const started = performance.now();
+      $("go").disabled = true;
+      $("status").textContent = "正在联网检索并核对作品名…";
+      try {
+        const res = await fetch("/api/name-search", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            name: $("name").value.trim(),
+            api_key: $("key").value.trim(),
+            must_find: $("mustFind").checked
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "查找失败");
+        const a = data.analysis || {};
+        const local = ((performance.now() - started) / 1000).toFixed(1);
+        $("status").textContent = "服务器耗时 " + data.elapsed + " 秒，页面等待 " + local + " 秒。"
+          + (data.bing_ok ? " 已参考必应结果。" : " 必应没有返回，仅按名称分析。")
+          + " 判断：" + [a.zh, a.en, a.ja].filter(Boolean).join(" / ");
+        render(data.items || []);
+        if (data.shinnku && data.shinnku.ok) {
+          const note = document.createElement("p");
+          note.className = "meta";
+          note.textContent = "真红小站对上了：" + (data.shinnku.pages || []).map((p) => p.name).join("、");
+          $("grid").prepend(note);
+        }
+        if (!(data.items || []).length) $("status").textContent += " VNDB 没有直接命中。";
+      } catch (err) {
+        $("status").textContent = err.message || String(err);
+      } finally {
+        $("go").disabled = false;
+      }
+    }
+    async function openDetail(it) {
+      $("mTitle").textContent = it.title || "作品详情";
+      $("mLoading").classList.remove("hidden");
+      $("mBody").innerHTML = "";
+      $("modal").classList.remove("hidden");
+      const res = await fetch("/api/detail", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ title: it.title || "", original: it.original || "", must_find: $("mustFind").checked })
+      });
+      const data = await res.json();
+      $("mLoading").classList.add("hidden");
+      ["kungal", "touchgal", "shinnku"].forEach((key) => {
+        const row = data[key] || {};
+        const box = document.createElement("section");
+        const h = document.createElement("h3");
+        h.textContent = {kungal:"鲲 Galgame", touchgal:"TouchGal", shinnku:"真红小站"}[key];
+        box.appendChild(h);
+        const p = document.createElement("p");
+        p.textContent = row.ok ? ((row.tags || []).join("、") || "没有标签") : (row.reason || "没有资料");
+        box.appendChild(p);
+        if (row.intro) {
+          const intro = document.createElement("p");
+          intro.textContent = row.intro;
+          box.appendChild(intro);
+        }
+        (row.pages || (row.page ? [{name: row.name || "参考页", page: row.page}] : [])).forEach((item) => {
+          if (!item.page) return;
+          const a = document.createElement("a");
+          a.href = item.page;
+          a.target = "_blank";
+          a.rel = "noreferrer";
+          a.textContent = item.name || "参考页";
+          box.appendChild(a);
+        });
+        $("mBody").appendChild(box);
+      });
+    }
+  </script>
+</body>
+</html>

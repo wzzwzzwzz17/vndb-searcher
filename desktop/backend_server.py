@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 import config
+from community_scores import attach_community_scores, score_line
 from llm_parser import (
     extract_tag_keywords,
     optimize_previous_query,
@@ -47,6 +48,11 @@ def extract_user_description(raw_text: str) -> str:
 
 
 def format_results(items: list[dict[str, Any]], meta: dict[str, Any]) -> str:
+    try:
+        attach_community_scores(items)
+        items.sort(key=lambda it: it.get("composite") if isinstance(it.get("composite"), (int, float)) else -1, reverse=True)
+    except Exception:
+        pass
     lines: list[str] = []
     lines.append("=" * 52)
     lines.append("Galgame 推荐结果（仅元数据，无资源链接）")
@@ -93,14 +99,14 @@ def format_results(items: list[dict[str, Any]], meta: dict[str, Any]) -> str:
         lines.append(f"【{i}】{title}")
         if original:
             lines.append(f"    原名: {original}")
-        lines.append(f"    评分: {rating_s}  |  发售: {released}")
+        lines.append(f"    评分: {score_line(it)}  |  发售: {released}")
         lines.append(f"    链接: {url}")
         lines.append(f"    其它高权重标签: {top_zh}")
         lines.append(f"    简介: {desc}")
         lines.append("")
 
     lines.append("-" * 52)
-    lines.append("数据来源: VNDB.org")
+    lines.append("数据来源: VNDB 评分 + 鲲 Galgame / TouchGal 评分（取得到才计入综合分）")
     return "\n".join(lines)
 
 

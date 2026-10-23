@@ -23,6 +23,11 @@
       <label class="field" for="apiKey">DeepSeek API Key</label>
       <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
       <p class="hint">可在 DeepSeek 开放平台创建。不会上传到本应用作者的服务器。</p>
+      <label class="field" for="kunToken">鲲 Galgame Token（可选）</label>
+      <input id="kunToken" type="password" placeholder="站点要求登录时再填" autocomplete="off" />
+      <label class="field" for="touchToken">TouchGal Token（可选）</label>
+      <input id="touchToken" type="password" placeholder="没有就留空" autocomplete="off" />
+      <p class="hint">这两个只用来读取作品评分，不拿下载链接。留空时如果站点拒绝访问，结果里对应分数会显示为横线。</p>
       <div class="actions">
         <button id="saveKey" class="btn-main" type="button">保存并继续</button>
       </div>
@@ -31,23 +36,18 @@
 
   <main id="main" class="app hidden">
     <header class="top">
-      <svg class="mascot" viewBox="0 0 64 64" aria-hidden="true">
-        <ellipse cx="32" cy="36" rx="18" ry="16" fill="#FFE3EC"/>
-        <path d="M18 28c-6-12 0-18 8-12 3 2 4 7 3 11" fill="#FF8FAB"/>
-        <path d="M46 28c6-12 0-18-8-12-3 2-4 7-3 11" fill="#FF8FAB"/>
-        <circle cx="26" cy="36" r="2.2" fill="#4A3140"/>
-        <circle cx="38" cy="36" r="2.2" fill="#4A3140"/>
-        <path d="M28 43c2 3 6 3 8 0" fill="none" stroke="#E85D84" stroke-width="1.6" stroke-linecap="round"/>
-      </svg>
+      <img class="stamp" alt="应用图标" src="/*__ICON__*/" />
       <div class="brand">
         <h1>VNDB搜索器</h1>
-        <p>雨里百跳 · 用自然语言找高分视觉小说</p>
+        <p>雨里百跳 · 金墨书页</p>
       </div>
       <div class="ghost-row">
         <button id="openTutorial" class="btn" type="button">教程</button>
         <button id="openAbout" class="btn" type="button">关于</button>
       </div>
     </header>
+
+    <div id="pageRecommend">
 
     <section class="card">
       <label class="field" for="desc">你想找什么样的作品？</label>
@@ -97,8 +97,52 @@
     </section>
 
     <footer class="footer">
-      查询作品需要能访问 api.vndb.org。国内网络通常要打开 VPN（梯子）。DeepSeek 一般可直连。标签库已内置在应用里。
+      查询作品需要能访问 api.vndb.org。国内网络通常要打开 VPN（梯子）。DeepSeek 一般可直连。TouchGal Token 先留空。
     </footer>
+    </div>
+
+    <div id="pageName" class="page hidden">
+      <section class="card">
+        <h2>名称精确搜索</h2>
+        <p class="hint">中文、英文、日文大致名字都可以。会先查必应，再分析正式名称，并用日文片段到 VNDB、鲲和真红小站里找。</p>
+        <textarea id="nameQuery" placeholder="例如：被光守望的坡道"></textarea>
+        <label class="check"><input id="nameMust" type="checkbox" /> 必须搜中</label>
+        <button id="nameGo" class="btn-main" type="button">开始查找</button>
+        <p class="hint" id="nameStatus"></p>
+      </section>
+      <section class="card"><div id="nameResults"></div></section>
+    </div>
+
+    <div id="pageTag" class="page hidden">
+      <section class="card">
+        <h2>高精度标签搜索</h2>
+        <p class="hint">目录按 VNDB 主父标签归类。权重 0.6 到 2.8。下面的操作区只用中文。</p>
+        <button id="openTree" class="btn" type="button">打开标签目录</button>
+        <input id="treeFilter" type="search" placeholder="在目录里筛中文或英文" />
+        <div id="tagTree" class="tree hidden"></div>
+        <div class="row" style="margin-top:10px">
+          <input id="tagNl" type="search" placeholder="用自然语言找标签" style="flex:1" />
+          <button id="tagNlGo" class="btn" type="button">搜索标签</button>
+        </div>
+        <div id="tagNlHits" class="row"></div>
+      </section>
+      <section class="card">
+        <h2>已选标签</h2>
+        <div id="pickedTags"></div>
+        <div class="btn-grid">
+          <button id="tagSearch" class="btn-main" type="button">按这些标签搜索</button>
+          <button id="tagRefresh" class="btn" type="button">刷新下一批</button>
+        </div>
+        <p class="hint" id="tagStatus"></p>
+        <div id="tagResults"></div>
+      </section>
+    </div>
+
+    <nav class="dock">
+      <button type="button" data-page="pageRecommend" class="on">推荐</button>
+      <button type="button" data-page="pageName">寻名</button>
+      <button type="button" data-page="pageTag">标签</button>
+    </nav>
   </main>
 
   <div id="tutorial" class="modal hidden">
@@ -131,6 +175,11 @@
         <li>内置约 3000 个官方标签，所以匹配标签本身不需要先连上 VNDB。真正列出作品时仍要访问 VNDB，国内通常需要 VPN。</li>
         <li>硬核模式允许找不到作品，不会为了凑结果把条件放得很松。</li>
       </ul>
+      <label class="field" for="kunToken2">鲲 Galgame Token（可选）</label>
+      <input id="kunToken2" type="password" autocomplete="off" />
+      <label class="field" for="touchToken2">TouchGal Token（可选）</label>
+      <input id="touchToken2" type="password" autocomplete="off" />
+      <p class="hint">只用于读取评分。保存发生在点「关闭」时。</p>
       <h2>借鉴与参考</h2>
       <ul>
         <li>VNDB 网站：https://vndb.org/</li>

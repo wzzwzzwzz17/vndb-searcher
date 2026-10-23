@@ -1,8 +1,6 @@
-import os
 import shutil
 
-here = os.path.dirname(os.path.abspath(__file__))
-src = os.path.join(here, "out", "VNDB-searcher.apk")
-dst = os.path.join(here, "VNDB-searcher.apk")
+src = r"C:\VNDB_ai\android_app\out\VNDB-searcher.apk"
+dst = r"C:\VNDB_ai\VNDB搜索器.apk"
 shutil.copyfile(src, dst)
 print("copied", dst)

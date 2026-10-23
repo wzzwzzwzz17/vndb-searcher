@@ -99,6 +99,20 @@
     toast._t = setTimeout(() => el.classList.add("hidden"), 2800);
   }
 
+  function httpGet(url, headers) {
+    return new Promise((resolve, reject) => {
+      const id = "g" + (seq++);
+      pending[id] = (raw) => {
+        try {
+          const obj = JSON.parse(raw);
+          if (!obj.ok) reject(new Error(obj.error || ("HTTP " + obj.status)));
+          else resolve(obj);
+        } catch (e) { reject(e); }
+      };
+      Android.httpGetAsync(id, url, JSON.stringify(headers || {}));
+    });
+  }
+
   function http(url, body, headers) {
     return new Promise((resolve, reject) => {
       const id = "h" + (seq++);
@@ -311,6 +325,12 @@
 
   function rewriteNode(node, mode, roles, ratingBox) {
     if (!Array.isArray(node) || !node.length) return node;
+    if ((node[0] === "tag" || node[0] === "dtag") && node.length === 4 && /^g\d+$/.test(String(node[1]))) {
+      let level = Number(node[3]);
+      if (!isFinite(level)) level = 0;
+      level = Math.min(3, Math.max(0, level));
+      node = node[2] === "!=" ? [node[0], "!=", node[1]] : [node[0], "=", [node[1], 0, level]];
+    }
     if (node[0] === "and" || node[0] === "or") {
       const kids = [];
       node.slice(1).forEach((c) => {
@@ -555,7 +575,7 @@
     const body = {
       filters: query.filters,
       fields: "title,alttitle,rating,description,released,votecount,developers{name,original},tags{id,rating,spoiler}",
-      sort: "rating",
+      sort: query.sort || "rating",
       reverse: true,
       results: 10,
       page: query.page || 1
@@ -698,7 +718,7 @@
       const meta = document.createElement("div");
       meta.className = "meta";
       const rating = (typeof it.rating === "number") ? it.rating.toFixed(2) : "暂无";
-      meta.textContent = (it.original ? it.original + " · " : "") + "评分 " + rating + " · " + (it.released || "日期未知");
+      meta.textContent = (it.original ? it.original + " · " : "") + (it.scoreLine || ("VNDB " + rating)) + " · " + (it.released || "日期未知");
       const tags = document.createElement("div");
       tags.className = "tags";
       tags.textContent = "其它高权重标签：" + (it.topText || "");
@@ -727,7 +747,7 @@
   function openDetail(it) {
     $("detailTitle").textContent = it.title || "作品";
     const rating = (typeof it.rating === "number") ? it.rating.toFixed(2) : "暂无";
-    $("detailMeta").textContent = (it.original || "无原名") + " · 评分 " + rating + " · " + (it.released || "日期未知");
+    $("detailMeta").textContent = (it.original || "无原名") + " · " + (it.scoreLine || ("VNDB " + rating)) + " · " + (it.released || "日期未知");
     const pubs = (it.developers || []).map((d) => d.name + (d.original ? "（" + d.original + "）" : "")).filter(Boolean);
     $("detailPub").textContent = "出版社 / 开发商：" + (pubs.length ? pubs.join("；") : "暂无");
     $("detailTags").textContent = "其它高权重标签：" + (it.topText || "暂无");
@@ -811,6 +831,102 @@
     return msg;
   }
 
+  function asTen(v) {
+    const n = Number(v);
+    if (!isFinite(n) || n <= 0) return null;
+    if (n > 10 && n <= 100) return Math.round(n) / 10;
+    if (n > 10) return null;
+    return Math.round(n * 100) / 100;
+  }
+
+  function normName(s) {
+    return String(s || "").toLowerCase().replace(/[\s*＊·・]+/g, "");
+  }
+
+  function findScore(node, queries) {
+    const skip = { download: 1, downloads: 1, magnet: 1, resource: 1, resources: 1, pan: 1, url: 1, link: 1, links: 1 };
+    let hit = null;
+    function walk(obj) {
+      if (hit || !obj) return;
+      if (Array.isArray(obj)) { obj.forEach(walk); return; }
+      if (typeof obj !== "object") return;
+      const names = [];
+      let score = null;
+      let votes = null;
+      Object.keys(obj).forEach((k) => {
+        if (skip[k.toLowerCase()]) return;
+        const val = obj[k];
+        const lk = k.toLowerCase();
+        if (typeof val === "string" && /name|title|original/.test(lk) && val.trim()) names.push(val.trim());
+        if (score == null && /^(rating|score|avg|average|avg_rating)$/.test(lk)) score = asTen(val);
+        if (votes == null && /count|votes/.test(lk) && typeof val === "number") votes = val;
+        if (val && typeof val === "object") {
+          if (typeof val["zh-cn"] === "string") names.push(val["zh-cn"]);
+          if (typeof val["ja-jp"] === "string") names.push(val["ja-jp"]);
+        }
+      });
+      const blob = normName(names.join(" "));
+      if (score != null && names.length && queries.some((q) => q && (blob.indexOf(q) >= 0 || q.indexOf(blob) >= 0))) {
+        hit = { ok: true, score: score, votes: votes, name: names[0] };
+        return;
+      }
+      Object.keys(obj).forEach((k) => { if (!skip[k.toLowerCase()]) walk(obj[k]); });
+    }
+    walk(node);
+    return hit;
+  }
+
+  async function lookupSite(kind, keyword) {
+    const headers = { Accept: "application/json", "User-Agent": "VNDB-Searcher/1.0 (Android; author: yulibaitiao)" };
+    const token = Android.getPref(kind === "kungal" ? "kungal_token" : "touchgal_token") || "";
+    if (token) headers.Authorization = "Bearer " + token;
+    const urls = kind === "kungal"
+      ? ["https://www.kungal.com/api/galgame", "https://www.kungal.com/api/search"]
+      : ["https://www.touchgal.io/api/galgame"];
+    const keys = kind === "kungal" ? ["keywords", "q"] : ["q", "keywords"];
+    for (let u = 0; u < urls.length; u++) {
+      for (let i = 0; i < keys.length; i++) {
+        const params = keys[i] + "=" + encodeURIComponent(keyword) + "&limit=5&page=1";
+        const joiner = urls[u].indexOf("?") >= 0 ? "&" : "?";
+        try {
+          const res = await httpGet(urls[u] + joiner + params, headers);
+          const data = JSON.parse(res.body || "{}");
+          const hit = findScore(data, [normName(keyword)]);
+          if (hit) return hit;
+        } catch (e) {
+          const msg = String(e && e.message || e);
+          if (/401|403|登录|moment|challenge/i.test(msg)) return { ok: false, reason: "需要登录或被站点拦截" };
+        }
+      }
+    }
+    return { ok: false, reason: "没有对应评分" };
+  }
+
+  async function attachCommunityScores(items) {
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const keyword = it.original || it.title || "";
+      const q = normName(keyword);
+      let kun = { ok: false, reason: "无标题" };
+      let touch = { ok: false, reason: "无标题" };
+      if (q) {
+        kun = await lookupSite("kungal", keyword);
+        touch = await lookupSite("touchgal", keyword);
+      }
+      it.community = { kungal: kun, touchgal: touch };
+      const nums = [];
+      if (typeof it.rating === "number") nums.push(it.rating);
+      if (kun.ok) nums.push(kun.score);
+      if (touch.ok) nums.push(touch.score);
+      it.composite = nums.length ? Math.round((nums.reduce((a, b) => a + b, 0) / nums.length) * 100) / 100 : null;
+      const fmt = (label, row) => row && row.ok ? (label + " " + row.score.toFixed(2)) : (label + " —");
+      const vndb = typeof it.rating === "number" ? it.rating.toFixed(2) : "—";
+      const comp = typeof it.composite === "number" ? it.composite.toFixed(2) : "—";
+      it.scoreLine = "VNDB " + vndb + " | " + fmt("鲲", kun) + " | " + fmt("TouchGal", touch) + " | 综合 " + comp;
+    }
+    items.sort((a, b) => (b.composite || -1) - (a.composite || -1));
+  }
+
   async function runSearch(kind) {
     if (state.busy) return;
     const year = clampYear();
@@ -864,6 +980,7 @@
         query.page = 1;
         items = byRating(byYear(await vndb(query), year), activeMode);
       }
+      try { await attachCommunityScores(items); } catch (e) {}
       const line = await decorate(items, query);
       const seen = (prev && kind !== "new") ? prev.seen.slice() : [];
       items.forEach((it) => { if (it.id && seen.indexOf(it.id) < 0) seen.push(it.id); });
@@ -943,11 +1060,272 @@
     });
   }
 
+
+  function showPage(id) {
+    ["pageRecommend", "pageName", "pageTag"].forEach((page) => {
+      const el = $(page);
+      if (el) el.classList.toggle("hidden", page !== id);
+    });
+    document.querySelectorAll(".dock button").forEach((button) => {
+      button.classList.toggle("on", button.getAttribute("data-page") === id);
+    });
+  }
+
+  function bindExtra() {
+    document.querySelectorAll(".dock button").forEach((button) => {
+      button.addEventListener("click", () => showPage(button.getAttribute("data-page")));
+    });
+    if ($("nameGo")) $("nameGo").addEventListener("click", nameSearch);
+    if ($("openTree")) $("openTree").addEventListener("click", toggleTree);
+    if ($("treeFilter")) $("treeFilter").addEventListener("input", () => drawTree(filterTree($("treeFilter").value)));
+    if ($("tagNlGo")) $("tagNlGo").addEventListener("click", searchTagsByWords);
+    if ($("tagSearch")) $("tagSearch").addEventListener("click", () => tagWeightedSearch(false));
+    if ($("tagRefresh")) $("tagRefresh").addEventListener("click", () => tagWeightedSearch(true));
+    renderPicked();
+  }
+
+  const tagState = { roots: [], flat: [], picked: [], seen: [] };
+
+  function tagLabel(id, en) { return state.zh[id] || en || id; }
+
+  function ensureTagTree() {
+    if (tagState.roots.length) return;
+    const raw = JSON.parse(Android.getAsset("www/tags_tree.json") || "[]");
+    const nodes = {};
+    raw.forEach((row) => {
+      const id = "g" + row.id;
+      nodes[id] = { id: id, en: row.name || "", zh: tagLabel(id, row.name || ""), searchable: !!row.searchable, parents: (row.parents || []).map((pid) => "g" + pid), children: [] };
+    });
+    const roots = [];
+    Object.keys(nodes).forEach((id) => {
+      const node = nodes[id];
+      const parents = node.parents.filter((pid) => nodes[pid]);
+      node.parents = parents;
+      node.also = parents.slice(1).map((pid) => nodes[pid].zh);
+      if (!parents.length) roots.push(node);
+      else nodes[parents[0]].children.push(node);
+    });
+    const byZh = (a, b) => a.zh.localeCompare(b.zh, "zh");
+    function sortNode(node) { node.children.sort(byZh); node.children.forEach(sortNode); }
+    roots.sort(byZh);
+    roots.forEach(sortNode);
+    tagState.roots = roots;
+    tagState.flat = Object.keys(nodes).map((id) => nodes[id]);
+  }
+
+  function renderTreeNode(node) {
+    const wrap = document.createElement("div");
+    wrap.className = "node";
+    const row = document.createElement("div");
+    row.className = "row";
+    let childBox = null;
+    if (node.children && node.children.length) {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "btn";
+      toggle.textContent = "展开";
+      childBox = document.createElement("div");
+      childBox.className = "hidden";
+      toggle.addEventListener("click", () => {
+        const hiddenNow = childBox.classList.toggle("hidden");
+        toggle.textContent = hiddenNow ? "展开" : "收起";
+        if (!childBox.childElementCount) node.children.forEach((child) => childBox.appendChild(renderTreeNode(child)));
+      });
+      row.appendChild(toggle);
+    }
+    const label = document.createElement("span");
+    const extra = (node.also || []).length ? "（也属于：" + node.also.join("、") + "）" : "";
+    label.textContent = node.zh + (node.en && node.zh !== node.en ? " / " + node.en : "") + extra;
+    row.appendChild(label);
+    if (node.searchable) {
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "btn";
+      add.textContent = "加入";
+      add.addEventListener("click", () => addPicked(node));
+      row.appendChild(add);
+    }
+    wrap.appendChild(row);
+    if (childBox) wrap.appendChild(childBox);
+    return wrap;
+  }
+
+  function drawTree(nodes) {
+    const box = $("tagTree");
+    box.innerHTML = "";
+    nodes.forEach((node) => box.appendChild(renderTreeNode(node)));
+  }
+
+  function filterTree(word) {
+    const q = (word || "").trim().toLowerCase();
+    if (!q) return tagState.roots;
+    return tagState.flat.filter((node) => (node.zh + " " + node.en + " " + node.id).toLowerCase().indexOf(q) >= 0).map((node) => Object.assign({}, node, { children: [] }));
+  }
+
+  function toggleTree() {
+    $("tagTree").classList.toggle("hidden");
+    if ($("tagTree").classList.contains("hidden")) return;
+    ensureTagTree();
+    drawTree(filterTree($("treeFilter").value));
+  }
+
+  function addPicked(tag) {
+    if (tagState.picked.some((item) => item.id === tag.id)) return;
+    tagState.picked.push({ id: tag.id, zh: tag.zh || tagLabel(tag.id, tag.en), level: 1 });
+    tagState.seen = [];
+    renderPicked();
+  }
+
+  function renderPicked() {
+    const box = $("pickedTags");
+    if (!box) return;
+    box.innerHTML = "";
+    if (!tagState.picked.length) { box.textContent = "还没有标签。从目录或搜索结果里添加。"; return; }
+    tagState.picked.forEach((tag, index) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      const name = document.createElement("strong");
+      name.textContent = tag.zh;
+      const weight = document.createElement("input");
+      weight.type = "number";
+      weight.min = "0.6";
+      weight.max = "2.8";
+      weight.step = "0.1";
+      weight.value = String(tag.level);
+      weight.style.width = "84px";
+      weight.addEventListener("change", () => {
+        let value = Number(weight.value);
+        if (value < 0.6) value = 0.6;
+        if (value > 2.8) value = 2.8;
+        tag.level = value;
+        weight.value = String(value);
+      });
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "btn";
+      remove.textContent = "移除";
+      remove.addEventListener("click", () => { tagState.picked.splice(index, 1); tagState.seen = []; renderPicked(); });
+      row.append(name, weight, remove);
+      box.appendChild(row);
+    });
+  }
+
+  async function searchTagsByWords() {
+    const text = $("tagNl").value.trim();
+    if (!text) return;
+    const box = $("tagNlHits");
+    box.innerHTML = "";
+    findCandidates(text).slice(0, 12).forEach((hit) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn";
+      button.textContent = tagLabel(hit.id, hit.name);
+      button.addEventListener("click", () => addPicked({ id: hit.id, zh: tagLabel(hit.id, hit.name), en: hit.name }));
+      box.appendChild(button);
+    });
+  }
+
+  function renderPlainCards(box, items) {
+    box.innerHTML = "";
+    items.forEach((it) => {
+      const card = document.createElement("article");
+      card.className = "result";
+      const body = document.createElement("div");
+      body.className = "body";
+      const h = document.createElement("h3");
+      h.textContent = it.title || "（无标题）";
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const rating = typeof it.rating === "number" ? it.rating.toFixed(2) : "—";
+      meta.textContent = (it.original || "") + " · 评分 " + rating + (it.scoreLine ? " · " + it.scoreLine : "");
+      const desc = document.createElement("div");
+      desc.className = "desc";
+      desc.textContent = it.description || "";
+      body.append(h, meta, desc);
+      card.appendChild(body);
+      card.addEventListener("click", () => {
+        $("detailTitle").textContent = it.title || "作品";
+        $("detailMeta").textContent = meta.textContent;
+        $("detailPub").textContent = "";
+        $("detailTags").textContent = it.topText || "";
+        $("detailLink").textContent = it.url || "";
+        $("detailDesc").textContent = it.description || "";
+        $("detail").classList.remove("hidden");
+      });
+      box.appendChild(card);
+    });
+  }
+
+  async function tagWeightedSearch(refresh) {
+    if (!tagState.picked.length) { toast("先加入标签"); return; }
+    $("tagStatus").textContent = refresh ? "正在换一批…" : "正在按权重搜索…";
+    const preds = tagState.picked.map((tag) => ["tag", "=", [tag.id, 0, Math.min(2.8, Math.max(0.6, Number(tag.level) || 0.6))]]);
+    (refresh ? tagState.seen : []).slice(-25).forEach((id) => preds.push(["id", "!=", id]));
+    const filters = preds.length === 1 ? preds[0] : ["and"].concat(preds);
+    try {
+      const items = await vndb({ filters: filters, sort: "rating", page: 1 });
+      if (!refresh) tagState.seen = [];
+      items.forEach((it) => { if (it.id && tagState.seen.indexOf(it.id) < 0) tagState.seen.push(it.id); });
+      await decorate(items, { filters: filters, tag_roles: {} });
+      $("tagStatus").textContent = "本次 " + items.length + " 部，按评分从高到低。累计看过 " + tagState.seen.length + " 部。";
+      renderPlainCards($("tagResults"), items);
+    } catch (err) {
+      $("tagStatus").textContent = err.message || String(err);
+    }
+  }
+
+  async function nameSearch() {
+    const name = $("nameQuery").value.trim();
+    if (!name) { toast("请输入作品名"); return; }
+    const started = Date.now();
+    $("nameGo").disabled = true;
+    $("nameStatus").textContent = "正在查必应并分析名称…";
+    try {
+      let snippets = [];
+      let bingOk = true;
+      try {
+        const page = await httpGet("https://www.bing.com/search?q=" + encodeURIComponent(name + " visual novel vndb") + "&setlang=zh-Hans", { "Accept-Language": "zh-CN,zh;q=0.9" });
+        const html = page.body || "";
+        const re = /<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+        let match;
+        while ((match = re.exec(html)) && snippets.length < 6) {
+          if (match[1].indexOf("bing.com") >= 0) continue;
+          snippets.push({ title: match[2].replace(/<[^>]+>/g, ""), url: match[1] });
+        }
+      } catch (e) { bingOk = false; }
+      const parsed = extractJson(await chat([
+        { role: "system", content: "根据大致作品名和必应摘要，判断最可能的视觉小说。只输出 JSON：{\"zh\":\"\",\"en\":\"\",\"ja\":\"\",\"vndb_id\":\"\"}。没有依据就不要编造 vndb_id。" },
+        { role: "user", content: JSON.stringify({ name: name, bing: snippets }) }
+      ], 400));
+      const names = [parsed.ja, parsed.en, parsed.zh, name].filter((item, index, arr) => item && arr.indexOf(item) === index);
+      const items = [];
+      const seen = {};
+      if (/^v\d+$/.test(parsed.vndb_id || "")) {
+        (await vndb({ filters: ["id", "=", parsed.vndb_id], sort: "searchrank" })).forEach((it) => { if (!seen[it.id]) { seen[it.id] = 1; items.push(it); } });
+      }
+      for (let i = 0; i < names.length && items.length < 10; i++) {
+        const hits = await vndb({ filters: ["search", "=", names[i]], sort: "searchrank" });
+        hits.forEach((it) => { if (it.id && !seen[it.id] && items.length < 10) { seen[it.id] = 1; items.push(it); } });
+      }
+      if (items.length) await attachCommunityScores(items);
+      const seconds = ((Date.now() - started) / 1000).toFixed(1);
+      $("nameStatus").textContent = "耗时 " + seconds + " 秒。" + (bingOk ? " 已参考必应。" : " 必应没有返回。") + " 判断：" + names.join(" / ");
+      renderPlainCards($("nameResults"), items);
+      if (!items.length) $("nameStatus").textContent += " 没有在 VNDB 对上。";
+    } catch (err) {
+      $("nameStatus").textContent = err.message || String(err);
+    } finally {
+      $("nameGo").disabled = false;
+    }
+  }
+
   function bind() {
     $("saveKey").addEventListener("click", () => {
       const key = $("apiKey").value.trim();
       if (key.length < 8) { toast("请填入有效的 API Key"); return; }
       Android.setApiKey(key);
+      Android.setPref("kungal_token", $("kunToken").value.trim());
+      Android.setPref("touchgal_token", $("touchToken").value.trim());
       state.apiKey = key;
       showMain(true);
     });
@@ -956,8 +1334,16 @@
       $("tutorial").classList.add("hidden");
     });
     $("openTutorial").addEventListener("click", () => $("tutorial").classList.remove("hidden"));
-    $("openAbout").addEventListener("click", () => $("about").classList.remove("hidden"));
-    $("aboutClose").addEventListener("click", () => $("about").classList.add("hidden"));
+    $("openAbout").addEventListener("click", () => {
+      $("kunToken2").value = Android.getPref("kungal_token") || "";
+      $("touchToken2").value = Android.getPref("touchgal_token") || "";
+      $("about").classList.remove("hidden");
+    });
+    $("aboutClose").addEventListener("click", () => {
+      Android.setPref("kungal_token", $("kunToken2").value.trim());
+      Android.setPref("touchgal_token", $("touchToken2").value.trim());
+      $("about").classList.add("hidden");
+    });
     $("detailClose").addEventListener("click", () => $("detail").classList.add("hidden"));
     $("favClose").addEventListener("click", () => $("favs").classList.add("hidden"));
     $("yearMinus").addEventListener("click", () => { $("year").value = String(clampYear() - 1); clampYear(); });
@@ -980,6 +1366,7 @@
     $("btnFavAdd").addEventListener("click", addFavs);
     $("btnFavOpen").addEventListener("click", openFavs);
     renderModes();
+    bindExtra();
   }
 
   function boot() {

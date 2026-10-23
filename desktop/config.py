@@ -57,3 +57,9 @@ HARDCORE_ALLOW_EMPTY = True  # 允许极端情况找不到，不做过度宽松
 
 # 结果 enrichment
 RESULT_TOP_TAG_COUNT = 4  # 每款游戏展示的权重前 N 标签（不含搜索标签）
+
+# 社区评分（只读评分，不取下载链接）。Token 可留空；站点要求登录时会跳过。
+KUNGAL_API_BASE = os.environ.get("KUNGAL_API_BASE", "https://www.kungal.com").strip()
+KUNGAL_API_TOKEN = os.environ.get("KUNGAL_API_TOKEN", "").strip()
+TOUCHGAL_API_BASE = os.environ.get("TOUCHGAL_API_BASE", "https://www.touchgal.io").strip()
+TOUCHGAL_API_TOKEN = os.environ.get("TOUCHGAL_API_TOKEN", "").strip()

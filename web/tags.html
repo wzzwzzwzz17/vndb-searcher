@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>高精度标签搜索 · VNDB搜索器</title>
+  <style>
+    :root { --bg:#f4f0ff; --ink:#2d2440; --muted:#7b6d90; --card:#fff; --line:#eadff5; --pink:#ff7aa2; --deep:#6d5efc; --shadow:0 18px 50px rgba(80,60,140,.12); }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); }
+    .wrap { width:min(1100px, calc(100% - 28px)); margin:0 auto; padding-bottom:40px; }
+    .nav { display:flex; gap:14px; padding-top:18px; }
+    .nav a { color:var(--deep); font-weight:800; text-decoration:none; }
+    .panel { background:var(--card); border-radius:24px; box-shadow:var(--shadow); padding:16px; margin-top:14px; }
+    .tree, .ops { max-height:420px; overflow:auto; }
+    button, input { font:inherit; }
+    button { border:0; border-radius:999px; min-height:36px; padding:0 12px; cursor:pointer; background:#f4efff; }
+    .primary { background:linear-gradient(90deg, var(--pink), var(--deep)); color:white; min-height:44px; font-weight:800; }
+    .node { margin-left:14px; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0; }
+    input[type="number"] { width:80px; border:1px solid var(--line); border-radius:10px; padding:6px; }
+    input[type="search"], input[type="password"] { border:1.5px solid var(--line); border-radius:12px; padding:10px; }
+    .card { background:white; border-radius:18px; padding:12px; margin-top:10px; }
+    .meta { color:var(--muted); font-size:14px; }
+    .hidden { display:none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav class="nav">
+      <a href="/">自然语言推荐</a>
+      <a href="/name">名称精确搜索</a>
+      <a href="/tags">高精度标签搜索</a>
+    </nav>
+    <h1>高精度标签搜索</h1>
+    <p class="meta">标签按 VNDB 的主父标签归类。一个标签如果还有别的父标签，会写在后面。权重从 0.6 到 2.8。</p>
+    <section class="panel">
+      <div class="row">
+        <button id="openTree" type="button">打开标签目录</button>
+        <input id="filter" type="search" placeholder="在目录里筛中文或英文" style="min-width:220px" />
+      </div>
+      <div id="tree" class="tree hidden"></div>
+      <div class="row">
+        <input id="nl" type="search" placeholder="用自然语言找标签，例如校园恋爱" style="flex:1" />
+        <button id="nlGo" type="button">搜索标签</button>
+        <input id="key" type="password" placeholder="DeepSeek Key，可留空" />
+      </div>
+      <div id="nlHits" class="row"></div>
+    </section>
+    <section class="panel">
+      <h2>已选标签</h2>
+      <div id="picked"></div>
+      <div class="row">
+        <button id="search" class="primary" type="button">按这些标签搜索</button>
+        <button id="refresh" type="button">刷新下一批</button>
+      </div>
+      <p id="status" class="meta"></p>
+      <div id="results"></div>
+    </section>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { roots: [], picked: [], seen: [] };
+
+    function zh(node) { return node.zh || node.en || node.id; }
+
+    function addTag(tag) {
+      if (!tag.searchable && tag.searchable !== undefined && tag.searchable === false) {
+        $("status").textContent = "这个标签不能用来筛选作品。";
+        return;
+      }
+      if (state.picked.some((item) => item.id === tag.id)) return;
+      state.picked.push({ id: tag.id, zh: zh(tag), en: tag.en || "", level: 1.0, searchable: tag.searchable !== false });
+      state.seen = [];
+      renderPicked();
+    }
+
+    function renderPicked() {
+      const box = $("picked");
+      box.innerHTML = "";
+      if (!state.picked.length) {
+        box.textContent = "还没有标签。从目录或上面的搜索结果里添加。";
+        return;
+      }
+      state.picked.forEach((tag, index) => {
+        const row = document.createElement("div");
+        row.className = "row";
+        const name = document.createElement("strong");
+        name.textContent = tag.zh;
+        const weight = document.createElement("input");
+        weight.type = "number";
+        weight.min = "0.6";
+        weight.max = "2.8";
+        weight.step = "0.1";
+        weight.value = String(tag.level);
+        weight.addEventListener("change", () => {
+          let value = Number(weight.value);
+          if (value < 0.6) value = 0.6;
+          if (value > 2.8) value = 2.8;
+          tag.level = value;
+          weight.value = String(value);
+        });
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "移除";
+        remove.addEventListener("click", () => {
+          state.picked.splice(index, 1);
+          state.seen = [];
+          renderPicked();
+        });
+        row.append(name, weight, remove);
+        box.appendChild(row);
+      });
+    }
+
+    function renderNode(node) {
+      const wrap = document.createElement("div");
+      wrap.className = "node";
+      const row = document.createElement("div");
+      row.className = "row";
+      let childBox = null;
+      if (node.children && node.children.length) {
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.textContent = "展开";
+        childBox = document.createElement("div");
+        childBox.className = "hidden";
+        toggle.addEventListener("click", () => {
+          const nowHidden = childBox.classList.toggle("hidden");
+          toggle.textContent = nowHidden ? "展开" : "收起";
+          if (!childBox.childElementCount) node.children.forEach((child) => childBox.appendChild(renderNode(child)));
+        });
+        row.appendChild(toggle);
+      }
+      const label = document.createElement("span");
+      const extra = (node.also || []).length ? "（也属于：" + node.also.join("、") + "）" : "";
+      label.textContent = zh(node) + (node.zh && node.en && node.zh !== node.en ? " / " + node.en : "") + extra;
+      row.appendChild(label);
+      if (node.searchable) {
+        const add = document.createElement("button");
+        add.type = "button";
+        add.textContent = "加入";
+        add.addEventListener("click", () => addTag(node));
+        row.appendChild(add);
+      }
+      wrap.appendChild(row);
+      if (childBox) wrap.appendChild(childBox);
+      return wrap;
+    }
+
+    function drawTree(nodes) {
+      const box = $("tree");
+      box.innerHTML = "";
+      nodes.forEach((node) => box.appendChild(renderNode(node)));
+    }
+
+    function filterTree(nodes, word) {
+      const q = word.trim().toLowerCase();
+      if (!q) return nodes;
+      const hits = [];
+      function walk(node) {
+        const blob = (zh(node) + " " + (node.en || "") + " " + node.id).toLowerCase();
+        if (blob.includes(q)) hits.push(node);
+        (node.children || []).forEach(walk);
+      }
+      nodes.forEach(walk);
+      return hits.map((node) => ({ ...node, children: [] }));
+    }
+
+    $("openTree").addEventListener("click", async () => {
+      $("tree").classList.toggle("hidden");
+      if (state.roots.length || $("tree").classList.contains("hidden")) return;
+      $("status").textContent = "正在加载标签目录…";
+      const res = await fetch("/api/tag-tree", { method: "POST", headers: {"Content-Type":"application/json"}, body: "{}" });
+      const data = await res.json();
+      if (!res.ok) { $("status").textContent = data.error || "目录加载失败"; return; }
+      state.roots = data.roots || [];
+      drawTree(state.roots);
+      $("status").textContent = "标签目录已按主父标签展开。";
+    });
+    $("filter").addEventListener("input", () => {
+      if (!state.roots.length) return;
+      drawTree(filterTree(state.roots, $("filter").value));
+    });
+    $("nlGo").addEventListener("click", async () => {
+      const res = await fetch("/api/tag-nl", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ text: $("nl").value.trim(), api_key: $("key").value.trim() })
+      });
+      const data = await res.json();
+      const box = $("nlHits");
+      box.innerHTML = "";
+      if (!res.ok) { $("status").textContent = data.error || "标签搜索失败"; return; }
+      (data.tags || []).forEach((tag) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = tag.zh;
+        button.addEventListener("click", () => addTag({ ...tag, searchable: true }));
+        box.appendChild(button);
+      });
+    });
+
+    function showItems(items) {
+      const box = $("results");
+      box.innerHTML = "";
+      items.forEach((it) => {
+        const card = document.createElement("article");
+        card.className = "card";
+        const h = document.createElement("h3");
+        h.textContent = it.title || "（无标题）";
+        const meta = document.createElement("p");
+        meta.className = "meta";
+        const rating = typeof it.rating === "number" ? it.rating.toFixed(2) : "—";
+        meta.textContent = (it.original || "") + " · 评分 " + rating + " · " + (it.top_tags_zh || "");
+        const desc = document.createElement("p");
+        desc.textContent = it.description || "";
+        card.append(h, meta, desc);
+        box.appendChild(card);
+      });
+    }
+
+    async function run(refresh) {
+      $("status").textContent = refresh ? "正在换一批更高分之外的作品…" : "正在按标签权重搜索…";
+      const res = await fetch("/api/tag-search", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({
+          tags: state.picked.map((tag) => ({ id: tag.id, level: tag.level })),
+          exclude: refresh ? state.seen : [],
+          api_key: $("key").value.trim()
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) { $("status").textContent = data.error || "搜索失败"; return; }
+      const items = data.items || [];
+      if (!refresh) state.seen = [];
+      items.forEach((it) => { if (it.id && !state.seen.includes(it.id)) state.seen.push(it.id); });
+      $("status").textContent = "本次 " + items.length + " 部，已按评分从高到低。累计看过 " + state.seen.length + " 部。";
+      showItems(items);
+    }
+    $("search").addEventListener("click", () => run(false));
+    $("refresh").addEventListener("click", () => run(true));
+    renderPicked();
+  </script>
+</body>
+</html>

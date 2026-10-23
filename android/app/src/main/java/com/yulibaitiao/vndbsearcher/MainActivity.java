@@ -1,6 +1,7 @@
 package com.yulibaitiao.vndbsearcher;
 
 import android.app.Activity;
+import android.util.Base64;
 import android.os.Build;
 import android.os.Bundle;
 import android.webkit.JavascriptInterface;
@@ -49,6 +50,7 @@ public class MainActivity extends Activity {
         String html = readAsset("www/index.html");
         html = html.replace("/*__CSS__*/", readAsset("www/app.css"));
         html = html.replace("/*__JS__*/", readAsset("www/app.js"));
+        html = html.replace("/*__ICON__*/", iconDataUri());
         webView.loadDataWithBaseURL(
                 "https://vndb.searcher.local/",
                 html,
@@ -70,6 +72,18 @@ public class MainActivity extends Activity {
         );
     }
 
+    private String iconDataUri() {
+        try (InputStream in = getAssets().open("www/icon.png")) {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) >= 0) bos.write(buf, 0, n);
+            return "data:image/png;base64," + Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     private String readAsset(String name) {
         try (InputStream in = getAssets().open(name);
              BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
@@ -85,6 +99,60 @@ public class MainActivity extends Activity {
         }
     }
 
+    private String httpGet(String urlStr, String headersJson) {
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(urlStr);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(20000);
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setRequestProperty("User-Agent", "VNDB-Searcher/1.0 (Android; author: yulibaitiao)");
+            applyHeaders(conn, headersJson);
+            int code = conn.getResponseCode();
+            InputStream stream = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            return packHttp(code, readStream(stream));
+        } catch (Exception e) {
+            return packError(e);
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private void applyHeaders(HttpURLConnection conn, String headersJson) throws Exception {
+        if (headersJson == null || headersJson.length() == 0 || "null".equals(headersJson)) return;
+        JSONObject headers = new JSONObject(headersJson);
+        Iterator<String> keys = headers.keys();
+        while (keys.hasNext()) {
+            String k = keys.next();
+            conn.setRequestProperty(k, headers.optString(k, ""));
+        }
+    }
+
+    private String packHttp(int code, String text) throws Exception {
+        JSONObject out = new JSONObject();
+        out.put("ok", code >= 200 && code < 300);
+        out.put("status", code);
+        out.put("body", text == null ? "" : text);
+        if (code < 200 || code >= 300) out.put("error", "HTTP " + code);
+        return out.toString();
+    }
+
+    private String packError(Exception e) {
+        try {
+            JSONObject out = new JSONObject();
+            out.put("ok", false);
+            out.put("status", 0);
+            out.put("body", "");
+            String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            out.put("error", msg);
+            return out.toString();
+        } catch (Exception ignored) {
+            return "{\"ok\":false,\"status\":0,\"error\":\"request failed\",\"body\":\"\"}";
+        }
+    }
+
     private String httpPost(String urlStr, String body, String headersJson) {
         HttpURLConnection conn = null;
         try {
@@ -97,14 +165,7 @@ public class MainActivity extends Activity {
             conn.setRequestProperty("Accept", "application/json");
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             conn.setRequestProperty("User-Agent", "VNDB-Searcher/1.0 (Android; author: yulibaitiao)");
-            if (headersJson != null && headersJson.length() > 0 && !"null".equals(headersJson)) {
-                JSONObject headers = new JSONObject(headersJson);
-                Iterator<String> keys = headers.keys();
-                while (keys.hasNext()) {
-                    String k = keys.next();
-                    conn.setRequestProperty(k, headers.optString(k, ""));
-                }
-            }
+            applyHeaders(conn, headersJson);
             byte[] bytes = body == null ? new byte[0] : body.getBytes(StandardCharsets.UTF_8);
             conn.setFixedLengthStreamingMode(bytes.length);
             try (OutputStream os = conn.getOutputStream()) {
@@ -112,27 +173,9 @@ public class MainActivity extends Activity {
             }
             int code = conn.getResponseCode();
             InputStream stream = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
-            String text = readStream(stream);
-            JSONObject out = new JSONObject();
-            out.put("ok", code >= 200 && code < 300);
-            out.put("status", code);
-            out.put("body", text);
-            if (code < 200 || code >= 300) {
-                out.put("error", "HTTP " + code);
-            }
-            return out.toString();
+            return packHttp(code, readStream(stream));
         } catch (Exception e) {
-            try {
-                JSONObject out = new JSONObject();
-                out.put("ok", false);
-                out.put("status", 0);
-                out.put("body", "");
-                String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-                out.put("error", msg);
-                return out.toString();
-            } catch (Exception ignored) {
-                return "{\"ok\":false,\"status\":0,\"error\":\"request failed\",\"body\":\"\"}";
-            }
+            return packError(e);
         } finally {
             if (conn != null) {
                 conn.disconnect();
@@ -210,6 +253,11 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void httpPostAsync(String id, String url, String body, String headersJson) {
             new Thread(() -> deliver(id, httpPost(url, body, headersJson))).start();
+        }
+
+        @JavascriptInterface
+        public void httpGetAsync(String id, String url, String headersJson) {
+            new Thread(() -> deliver(id, httpGet(url, headersJson))).start();
         }
     }
 }

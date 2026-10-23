@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sdk = $env:ANDROID_SDK_ROOT
 if (-not $sdk) { $sdk = $env:ANDROID_HOME }
-if (-not $sdk) { throw "Set ANDROID_SDK_ROOT or ANDROID_HOME to your Android SDK path." }
+if (-not $sdk) { throw "请先设置 ANDROID_SDK_ROOT 或 ANDROID_HOME" }
 $bt = Join-Path $sdk "build-tools\34.0.0"
 $jar = Join-Path $sdk "platforms\android-34\android.jar"
 $aapt2 = Join-Path $bt "aapt2.exe"
