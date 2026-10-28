@@ -9,7 +9,7 @@
 
 2. **多平台包只留 PC**。正版多平台合集（10~30GB）在制作时会把
    `PC/`、`安卓直装/`、`iPhone/`、`KRKR/`、`Tyranor/` 放在同一层。超过
-   `threshold_gb`（默认 9GB）就按最底层的文件名分类，删掉安卓/iOS/KRKR 那几
+   `threshold_gb`（默认 4GB）就按最底层的文件名分类，删掉安卓/iOS/KRKR 那几
    棵子树。判不准的一律保留——宁可多占空间，不能删错。
 """
 
@@ -214,7 +214,7 @@ def check_game_like(entries: Iterable[Entry]) -> Report:
     return rep
 
 
-def plan_prune(entries: Iterable[Entry], threshold_gb: float = 9.0) -> Report:
+def plan_prune(entries: Iterable[Entry], threshold_gb: float = 4.0) -> Report:
     """多平台包只留 PC：返回要删的子树。"""
     entries = list(entries)
     base = check_game_like(entries)
@@ -297,7 +297,7 @@ def walk_cloud(client: Any, path: str, max_depth: int = 6) -> list[Entry]:
     return out
 
 
-def cleanup_junk(client: Any, path: str, threshold_gb: float = 9.0) -> Report:
+def cleanup_junk(client: Any, path: str, threshold_gb: float = 4.0) -> Report:
     """体检一个已入库目录，不删任何东西（只看）。"""
     return plan_prune(walk_cloud(client, path), threshold_gb=threshold_gb)
 

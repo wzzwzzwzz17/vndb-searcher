@@ -23,7 +23,9 @@ from .crawler import SearchEngine
 from .crawler.base import SOURCE_DIRECT, SOURCE_MAGNET, SOURCE_SHARE
 from .db import TaskDB
 from .logger import get_logger, setup_logging
+from .catalog import sync as catalog_export
 from .notebook import sync as notebook_export
+from .passwords import sync as passwords_export
 from .vndb import Vn, VndbClient, VndbError
 
 
@@ -46,6 +48,9 @@ class Scheduler:
         run_cfg = cfg.get("run") or {}
         self.max_vns = int(run_cfg.get("max_vns") or 0)
         self.stop_after_failures = int(run_cfg.get("stop_after_consecutive_failures") or 0)
+        crawler_cfg = cfg.get("crawler") or {}
+        # 老磁力基本没种，每次尝试都要等 metadata 超时：一部作品只真试前几条
+        self.max_magnet_tries = int(crawler_cfg.get("max_magnet_tries") or 1)
 
         self.processed: set[str] = set()
         self.stats = {"success": 0, "failed": 0, "skipped": 0, "vns": 0}
@@ -143,11 +148,20 @@ class Scheduler:
 
     # ---------- 主流程 ----------
     def run(self, buckets: list[float] | None = None, max_vns: int | None = None,
-            skip_retries: bool = False) -> dict[str, Any]:
+            skip_retries: bool = False, max_minutes: float | None = None) -> dict[str, Any]:
         setup_logging(cpath(self.cfg, "paths.log_dir"))
         self.db.recompute_total()
         self.log.info("启动：已入库 %d 部 / %.2fGB，上限 %.0fGB",
                       self.db.count_done(), self.total_gb(), self.max_total_gb)
+
+        targets = [float(b) for b in (buckets or self.cfg.get("rating_buckets") or [])]
+        limit = int(max_vns or self.max_vns or 0)
+        run_cfg = self.cfg.get("run") or {}
+        time_cap = float(max_minutes if max_minutes is not None else (run_cfg.get("max_minutes") or 0) or 0)
+        consecutive_failures = 0
+        started = time.time()
+        if time_cap > 0:
+            self.log.info("本轮限时 %.0f 分钟：到期后不新开作品，手头任务会跑完", time_cap)
 
         if not self.ensure_login():
             raise SystemExit("没有百度网盘登录态，无法入库。先执行: python -m baidu_cloud.auth login")
@@ -157,11 +171,9 @@ class Scheduler:
         if not skip_retries:
             if self.run_retries():
                 self.log.info("重试成功 %d 部", self.stats["success"])
-
-        targets = [float(b) for b in (buckets or self.cfg.get("rating_buckets") or [])]
-        limit = int(max_vns or self.max_vns or 0)
-        consecutive_failures = 0
-        started = time.time()
+            if time_cap > 0 and (time.time() - started) >= time_cap * 60:
+                self.log.info("重试阶段已用完本轮限时 %.0f 分钟，停止开新任务", time_cap)
+                return self._summary(started)
 
         try:
             for bucket in targets:
@@ -175,6 +187,13 @@ class Scheduler:
                         if vn.id in self.processed or self.db.is_done(vn.id):
                             self.stats["skipped"] += 1
                             continue
+                        # 限时软停：到点后不再开新作品，正在 _handle 的会继续跑完
+                        if time_cap > 0 and (time.time() - started) >= time_cap * 60:
+                            self.log.info(
+                                "已到本轮限时 %.0f 分钟，停止开新任务（手头若有下载/转存/上传会继续）",
+                                time_cap,
+                            )
+                            return self._summary(started)
                         self.processed.add(vn.id)
                         self.stats["vns"] += 1
                         if self.reached_limit():
@@ -191,6 +210,9 @@ class Scheduler:
                         break
                     page += 1
                     if limit and self.stats["vns"] >= limit:
+                        return self._summary(started)
+                    if time_cap > 0 and (time.time() - started) >= time_cap * 60:
+                        self.log.info("已到本轮限时 %.0f 分钟，停止开新任务", time_cap)
                         return self._summary(started)
         except StopFull:
             if self.stop_on_limit:
@@ -217,6 +239,16 @@ class Scheduler:
             self.missing_path = notebook_export(self.cfg, self.db)
         except OSError as exc:  # noqa: BLE001
             self.log.warning("未收录清单写不出去: %s", exc)
+        try:
+            pw_path = passwords_export(self.cfg, self.db)
+        except OSError as exc:  # noqa: BLE001
+            pw_path = None
+            self.log.warning("解压码文档写不出去: %s", exc)
+        try:
+            cat_path = catalog_export(self.cfg, self.db)
+        except OSError as exc:  # noqa: BLE001
+            cat_path = None
+            self.log.warning("已收录文档写不出去: %s", exc)
         self.log.info(
             "结束：本次成功 %d，跳过 %d，失败 %d，共 %.2fGB / %d 部，用时 %.1f 分钟",
             summary["success"], summary["skipped"], summary["failed"],
@@ -224,11 +256,17 @@ class Scheduler:
         )
         if missing:
             self.log.info("未收录清单：%d 部 → %s", missing, self.missing_path)
+        if pw_path and self.db.count_passwords():
+            self.log.info("解压码一览：%d 部 → %s", self.db.count_passwords(), pw_path)
+        if cat_path:
+            self.log.info("已收录台账：%d 部 → %s", summary["entries"], cat_path)
         return summary
 
     # ---------- 单部作品 ----------
     def _handle(self, vn: Vn) -> bool:
         names = vn.names
+        # 重试过就不在这一轮的主循环里再走一遍（候选完全一样，只会重复烧时间）
+        self.processed.add(vn.id)
         self.db.mark_seen(vn.id, vn.display_rating, vn.title)
         self.log.info("▶ %s 《%s》 评分 %s", vn.id, vn.preferred_name, vn.display_rating)
 
@@ -255,6 +293,7 @@ class Scheduler:
             return False
 
         notes: list[str] = []
+        magnet_tries = 0
         for res in resources:
             if self.reached_limit():
                 return False
@@ -288,6 +327,14 @@ class Scheduler:
                 self._record_pending_magnet(vn, res)
                 notes.append("磁力离线不可用")
                 continue
+            if res.source_type == SOURCE_MAGNET:
+                # 老磁力基本没种，每次尝试要等 metadata 超时；一部只试前几条
+                if magnet_tries >= self.max_magnet_tries:
+                    self.log.info("  磁力候选试够 %d 条了，剩下的只登记不下载", self.max_magnet_tries)
+                    self._record_pending_magnet(vn, res, "本轮磁力候选已达上限")
+                    notes.append("磁力候选已达上限")
+                    continue
+                magnet_tries += 1
             result = self.saver.save(res, vndb_id=vn.id, name=vn.preferred_name)
             if result.ok:
                 self.db.mark_done(
@@ -300,6 +347,12 @@ class Scheduler:
                     cloud_path=result.cloud_path,
                     size_gb=result.size_gb,
                 )
+                if result.route == SOURCE_SHARE:
+                    self._record_password(vn, res)
+                try:
+                    catalog_export(self.cfg, self.db)
+                except OSError as exc:  # noqa: BLE001
+                    self.log.warning("写已收录文档失败: %s", exc)
                 self.stats["success"] += 1
                 self.log.info("  ✓ 入库 %s（%.2fGB，累计 %.2fGB）",
                               result.cloud_path, result.size_gb, self.total_gb())
@@ -332,8 +385,49 @@ class Scheduler:
         self.stats["failed"] += 1
         return False
 
+    def _record_password(self, vn: Vn, res: Any) -> None:
+        """鲲转存成功：把解压码写进库并同步到工作区根目录文档。"""
+        import re
+
+        extra = dict(getattr(res, "extra", None) or {})
+        archive = str(extra.get("archive_password") or "").strip()
+        share_pwd = str(extra.get("pwd") or "").strip()
+        link = str(getattr(res, "link", "") or "")
+        if not share_pwd and link:
+            match = re.search(r"[?&]pwd=([\w]+)", link)
+            if match:
+                share_pwd = match.group(1)
+        self.db.set_password(
+            vndb_id=vn.id,
+            title=vn.preferred_name,
+            archive_password=archive,
+            share_pwd=share_pwd,
+            site=str(getattr(res, "site", "") or "kungal"),
+            detail_url=str(getattr(res, "detail_url", "") or "")[:400],
+            resource_link=link[:500],
+        )
+        try:
+            path = passwords_export(self.cfg, self.db)
+            if archive:
+                self.log.info("  解压码已记入 %s：%s", path.name, archive)
+            else:
+                self.log.info(
+                    "  解压码未提供，已在 %s 记为空（分享提取码 %s）",
+                    path.name,
+                    share_pwd or "无",
+                )
+        except OSError as exc:  # noqa: BLE001 - 文档写失败不影响入库
+            self.log.warning("写解压码文档失败: %s", exc)
+
     def _record_missing(self, vn: Vn, reason: str = "") -> None:
         """三个渠道都没成功：记进 missing 表，run 结束时会导出成根目录文档。"""
+        # 同一部作品的多个候选会重复同样的失败原因，去重后再落盘
+        parts: list[str] = []
+        for piece in str(reason or "").split("；"):
+            piece = piece.strip()
+            if piece and piece not in parts:
+                parts.append(piece)
+        reason = "；".join(parts)
         self.db.add_missing(vn.id, vn.preferred_name, vn.display_rating, reason)
         try:
             self.missing_path = notebook_export(self.cfg, self.db)

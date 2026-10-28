@@ -36,7 +36,7 @@ max_resource_gb: 60
 prune:
   enabled: true
   # 单部超过这个体积就当成多平台合集，只保留 PC 端文件（安卓/iOS/KRKR/Tyranor 全删）
-  threshold_gb: 9
+  threshold_gb: 4
 
 vndb:
   base_url: https://api.vndb.org/kana
@@ -61,6 +61,8 @@ crawler:
   proxy: ""
   # 鲲的资源里是否允许“合集”类资源（默认不允许，避免一部游戏把整包合集算进来）
   allow_collection: false
+  # 老磁力基本没种：一部作品最多真试几条磁力（剩下的只登记进待处理清单）
+  max_magnet_tries: 1
   # 直链是否用 aria2 分段下载（实测同一 CDN 单连接被限到 0.19MB/s，8 连接 1.1MB/s）
   aria2_direct: true
 
@@ -89,7 +91,7 @@ baidu:
   # aria2 下完经常不肯退出；超过这么久没有新数据就收工（还有 .aria2 控制文件则算没下完）
   aria2_stall_seconds: 300
   # 连种子元数据都拿不到（0 字节）超过这么久就放弃：老磁力常常没人做种了
-  aria2_metadata_seconds: 120
+  aria2_metadata_seconds: 60
   # 磁力没带 tracker 时补的公共 tracker（只影响找 peer，不改变下载内容）
   aria2_trackers:
     - udp://tracker.opentrackr.org:1337/announce
@@ -111,6 +113,8 @@ encrypt:
 run:
   # 单次运行最多处理多少部作品（0 = 不限，配合 Ctrl+C 随时停）
   max_vns: 0
+  # 单次运行最多跑多少分钟（0 = 不限）；守护重启时用它切成一段一段
+  max_minutes: 0
   # 连续失败多少部后自动停（0 = 不停），防止站点改版后空转
   stop_after_consecutive_failures: 0
 
@@ -119,3 +123,31 @@ paths:
   log_dir: galsave/logs
   # 三个渠道都没捞到的作品会写进这个文档（相对仓库根目录）
   missing_doc: ../未收录作品.md
+  # 转存成功后的解压码一览
+  password_doc: ../解压码.md
+  # 已入库台账（抓取按 vndb_id 去重，这个文档给人看）
+  catalog_doc: ../已收录作品.md
+  # 心跳/进程锁：守护用它判断流水线是否还活着
+  heartbeat: galsave/data/heartbeat.json
+  run_lock: galsave/data/run.lock
+  # 卡住时给 DeepSeek 的运维提示词
+  prompt_ops: ../DEEPSEEK续跑提示词.md
+
+# Cursor 断连/崩溃后仍能续跑；本机私有覆盖请写 config.local.yaml（已 gitignore）
+guardian:
+  enabled: true
+  poll_seconds: 45
+  stale_seconds: 180
+  auto_resume: true
+  max_restarts: 20
+  network_backoff_seconds: [30, 60, 120, 300, 600]
+  ask_deepseek_when_stuck: true
+  stuck_after_restarts: 3
+
+deepseek:
+  # 留空则读环境变量 DEEPSEEK_API_KEY / GALSAVE_DEEPSEEK_KEY
+  api_key: ""
+  base_url: https://api.deepseek.com
+  model: deepseek-chat
+  timeout: 90
+  max_tokens: 1200

@@ -163,15 +163,20 @@ class DirectDownloader:
                 self.log.info("复用上次下好的文件：%s（%.2fGB）", target.name, got / 1e9)
                 return target
             if expected_size and 0 < got < expected_size:
-                # 半成品（比如 aria2 下到一半停了）：改名为 .part，接着续传，别从头再来
-                target.replace(part)
-                self.log.info("发现半成品 %s（%.2f/%.2fGB），改名 .part 继续续传",
-                              target.name, got / 1e9, expected_size / 1e9)
+                control = target.with_suffix(target.suffix + ".aria2")
+                if self.use_aria2 and control.exists() and self._aria2_binary():
+                    # aria2 自己的半成品：它认 .aria2 控制文件，交给它续传比 requests 快得多
+                    self.log.info("aria2 有未完成的下载 %s（%.2f/%.2fGB），继续用它续传",
+                                  target.name, got / 1e9, expected_size / 1e9)
+                else:
+                    # 半成品（比如 aria2 下到一半停了）：改名为 .part，接着续传，别从头再来
+                    target.replace(part)
+                    self.log.info("发现半成品 %s（%.2f/%.2fGB），改名 .part 继续续传",
+                                  target.name, got / 1e9, expected_size / 1e9)
 
         # 有 aria2 就先用它分段下（快）；它自己会接着上次的 .aria2 控制文件续传，
         # 而 requests 那套 .part 半成品只能由 requests 自己续，两者不混用。
-        control = target.with_suffix(target.suffix + ".aria2")
-        if self.use_aria2 and not part.exists() and not control.exists():
+        if self.use_aria2 and not part.exists():
             expected, _accepts = self.probe(url, referer=referer)
             if self._download_aria2(url, target, referer, retries, progress):
                 got = target.stat().st_size

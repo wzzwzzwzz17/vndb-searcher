@@ -65,7 +65,7 @@ class CloudSaver:
         # 入库后体检：不是游戏本体就删掉；多平台包只留 PC
         prune_cfg = cfg.get("prune") or {}
         self.prune_enabled = bool(prune_cfg.get("enabled", True))
-        self.prune_threshold_gb = float(prune_cfg.get("threshold_gb") or 9.0)
+        self.prune_threshold_gb = float(prune_cfg.get("threshold_gb") or 4.0)
 
         enc = cfg.get("encrypt") or {}
         self.encrypt_enabled = bool(enc.get("enabled", True))

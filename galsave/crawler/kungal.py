@@ -26,6 +26,18 @@ from .base import SOURCE_SHARE, BaseCrawler, CrawlerError, Resource, parse_size_
 
 _BAIDU = re.compile(r"https?://(?:pan|yun)\.baidu\.com/s/[\w\-]+(?:\?pwd=[\w]+)?")
 _TOOL_WORDS = ("模拟器", "解压工具", "教程", "工具包", "汉化补丁", "字体包")
+# 正文里抠解压码（不是百度 ?pwd= 提取码）
+_ARCHIVE_PASS = (
+    re.compile(
+        r"(?:解压(?:密码|碼|码)|壓縮密碼|压缩密码|archive\s*password)\s*[：:=\s]\s*"
+        r"[`「『\"']?([^\s`」』\"'，,；;|/]{1,64})[`」』\"']?",
+        re.I,
+    ),
+    re.compile(
+        r"(?:解压码|解壓碼)\s*[：:]\s*[`「『\"']?([A-Za-z0-9_\-]{1,64})[`」』\"']?",
+        re.I,
+    ),
+)
 
 
 class KungalCrawler(BaseCrawler):
@@ -162,6 +174,13 @@ class KungalCrawler(BaseCrawler):
                 full_title = display
             else:
                 full_title = f"{title} [{display}]"
+            body_text = _node_text(item.get("content"))
+            archive_hint = _find_archive_password(body_text)
+            # 接口字段偶发直接带在资源条目上
+            for key in ("archive_password", "unzip_password", "password"):
+                raw = item.get(key)
+                if isinstance(raw, str) and raw.strip():
+                    archive_hint = archive_hint or raw.strip()
             out.append(Resource(
                 site=self.site,
                 source_type=SOURCE_SHARE,
@@ -175,6 +194,7 @@ class KungalCrawler(BaseCrawler):
                     "work_id": work_id,
                     "resource_id": resource_id,
                     "pwd": pwd,
+                    "archive_password": archive_hint,
                     "providers": providers,
                     "resource_type": res_type,
                     "names": names,
@@ -208,12 +228,37 @@ class KungalCrawler(BaseCrawler):
             raise CrawlerError(f"kungal 条目 {resource_id} 没有百度链接（{len(urls)} 个其它链接）")
         res.link = baidu[0]
         extra = dict(res.extra or {})
-        extra["pwd"] = payload.get("extraction_code") or extra.get("pwd") or ""
-        extra["archive_password"] = payload.get("archive_password") or ""
+        extra["pwd"] = (
+            str(payload.get("extraction_code") or "").strip()
+            or str(extra.get("pwd") or "").strip()
+        )
+        # 解压码：接口优先，其次搜索阶段从正文抠到的
+        api_pass = str(
+            payload.get("archive_password")
+            or payload.get("unzip_password")
+            or payload.get("password")
+            or ""
+        ).strip()
+        extra["archive_password"] = api_pass or str(extra.get("archive_password") or "").strip()
         res.extra = extra
         if not res.size_gb:
             res.size_gb = parse_size_gb(str(payload.get("size") or ""))
         return res
+
+
+def _find_archive_password(text: str) -> str:
+    """从资源详情正文里找解压码；找不到返回空串。"""
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+    for pattern in _ARCHIVE_PASS:
+        match = pattern.search(raw)
+        if match:
+            code = match.group(1).strip().strip("`「『」』\"'")
+            # 排除明显是百度提取码占位或整段 URL
+            if code and "http" not in code.lower() and code.lower() not in {"pwd", "password"}:
+                return code[:64]
+    return ""
 
 
 def _collect_links(node: Any, depth: int = 0, context: str = "") -> list[str]:

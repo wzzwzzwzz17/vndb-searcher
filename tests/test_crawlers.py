@@ -224,6 +224,22 @@ class KungalTest(unittest.TestCase):
         # detail_url 必须逐条唯一，否则 _finish 会把它们全去重掉
         self.assertEqual(len({r.detail_url for r in found}), 2)
 
+    def test_resources_pick_archive_password_from_content(self) -> None:
+        work = {"id": 9, "display_name": "千恋＊万花"}
+        items = [{
+            "id": 11, "resource_type": "game", "title": "本体", "size": "5 GB",
+            "state": "valid", "provider_names": ["百度网盘"],
+            "content": {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "解压密码：banka88"},
+                    {"type": "link", "url": "https://pan.baidu.com/s/1abc?pwd=zz11"},
+                ],
+            },
+        }]
+        found = self.crawler._resources_from_items(items, work, 95.0, ["千恋＊万花"])
+        self.assertEqual(found[0].extra.get("archive_password"), "banka88")
+
     def test_resolve_share_uses_downloads_api(self) -> None:
         res = Resource(
             site="kungal", source_type=SOURCE_SHARE, title="千恋＊万花",

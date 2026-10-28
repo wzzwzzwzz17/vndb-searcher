@@ -33,7 +33,7 @@ DEFAULTS: dict[str, Any] = {
     # 入库后体检：超过阈值就当多平台包，只留 PC；不是游戏本体的诱饵分享直接删掉
     "prune": {
         "enabled": True,
-        "threshold_gb": 9.0,
+        "threshold_gb": 4.0,
     },
     "vndb": {
         "base_url": "https://api.vndb.org/kana",
@@ -51,6 +51,8 @@ DEFAULTS: dict[str, Any] = {
         "max_pages": 2,
         "proxy": "",
         "allow_collection": False,
+        # 老磁力基本没种：一部作品最多真试几条磁力，剩下的只登记不下载
+        "max_magnet_tries": 1,
         # 直链用 aria2 分段下载：实测本校校园网单机约 1.5MB/s，分 8 路没有收益，
         # 只有线路不限速时才值得打开
         "aria2_direct": False,
@@ -75,7 +77,7 @@ DEFAULTS: dict[str, Any] = {
         # aria2 下完经常不肯退出，超过这么久没有新数据就当收工（有 .aria2 控制文件则算失败）
         "aria2_stall_seconds": 300,
         # 连种子元数据都拿不到（0 字节）超过这么久就放弃：老磁力常常没人做种了
-        "aria2_metadata_seconds": 120,
+        "aria2_metadata_seconds": 60,
         # 磁力没带 tracker 时补的公共 tracker
         "aria2_trackers": [
             "udp://tracker.opentrackr.org:1337/announce",
@@ -93,12 +95,36 @@ DEFAULTS: dict[str, Any] = {
     },
     "run": {
         "max_vns": 0,
+        "max_minutes": 0,
         "stop_after_consecutive_failures": 0,
     },
     "paths": {
         "db": "galsave/data/task.db",
         "log_dir": "galsave/logs",
         "missing_doc": "../未收录作品.md",
+        "password_doc": "../解压码.md",
+        "catalog_doc": "../已收录作品.md",
+        "heartbeat": "galsave/data/heartbeat.json",
+        "run_lock": "galsave/data/run.lock",
+        "prompt_ops": "../DEEPSEEK续跑提示词.md",
+    },
+    # Cursor 断连/崩溃后仍能续跑 + 卡住时问 DeepSeek；本机覆盖写 config.local.yaml（已 gitignore）
+    "guardian": {
+        "enabled": True,
+        "poll_seconds": 45,
+        "stale_seconds": 180,
+        "auto_resume": True,
+        "max_restarts": 20,
+        "network_backoff_seconds": [30, 60, 120, 300, 600],
+        "ask_deepseek_when_stuck": True,
+        "stuck_after_restarts": 3,
+    },
+    "deepseek": {
+        "api_key": "",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat",
+        "timeout": 90,
+        "max_tokens": 1200,
     },
 }
 
@@ -128,25 +154,36 @@ def cpath(cfg: dict, dotted: str) -> Path:
     return path if path.is_absolute() else (REPO_ROOT / path)
 
 
+def _load_yaml(path: Path) -> dict[str, Any]:
+    try:
+        import yaml
+
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:  # noqa: BLE001 - 统一转成配置错误
+        raise ConfigError(f"读取 {path} 失败: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path} 顶层必须是映射（键: 值）")
+    return data
+
+
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
     """读取配置。找不到文件就用默认值，YAML 写错时报出具体原因。"""
     config_path = Path(path or os.environ.get("GALSAVE_CONFIG") or DEFAULT_CONFIG_PATH)
     cfg = copy.deepcopy(DEFAULTS)
 
     if config_path.exists():
-        try:
-            import yaml
+        _deep_merge(cfg, _load_yaml(config_path))
 
-            data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        except Exception as exc:  # noqa: BLE001 - 统一转成配置错误
-            raise ConfigError(f"读取 {config_path} 失败: {exc}") from exc
-        if not isinstance(data, dict):
-            raise ConfigError(f"{config_path} 顶层必须是映射（键: 值）")
-        _deep_merge(cfg, data)
+    # 本机私有覆盖，放在 config.local.yaml（已进 .gitignore）
+    local_path = config_path.with_name("config.local.yaml")
+    if local_path.exists() and local_path.resolve() != config_path.resolve():
+        _deep_merge(cfg, _load_yaml(local_path))
 
     _apply_env(cfg)
     _normalize(cfg)
     cfg["_path"] = str(config_path) if config_path.exists() else f"{config_path}（未找到，使用默认值）"
+    if local_path.exists():
+        cfg["_local_path"] = str(local_path)
     return cfg
 
 
@@ -158,6 +195,8 @@ def _apply_env(cfg: dict[str, Any]) -> None:
         "GALSAVE_FUZZY": ("fuzzy_match_threshold", float),
         "GALSAVE_PROXY": ("crawler.proxy", str),
         "GALSAVE_VNDB_PROXY": ("vndb.proxy", str),
+        "DEEPSEEK_API_KEY": ("deepseek.api_key", str),
+        "GALSAVE_DEEPSEEK_KEY": ("deepseek.api_key", str),
     }
     for env_name, (dotted, caster) in env_map.items():
         raw = os.environ.get(env_name)

@@ -12,11 +12,18 @@
     python -m galsave prune      # 体检入库目录：诱饵分享删掉、多平台包只留 PC
     python -m galsave decrypt F  # 把 C 路线加密文件还原到本地
     python -m galsave selftest   # 纯本地自检，不联网
+    python -m galsave watch      # 实时状态窗（读日志+数据库，不启动抓取）
+    python -m galsave passwords  # 转存入库的解压码一览 → 工作区根目录 解压码.md
+    python -m galsave catalog    # 已收录台账 → 工作区根目录 已收录作品.md（去重依据）
+    python -m galsave adopt      # 扫描网盘已有目录，补进 done 表，避免重复抓
+    python -m galsave guard      # Cursor 断连后仍可本地守护续跑（可问 DeepSeek）
+    python -m galsave ask        # 把当前状态交给 DeepSeek，要下一步安全动作
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -71,6 +78,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"待处理磁力: {stats['pending_magnet']} 条（网盘不接受磁力离线，用 python -m galsave magnets 导出）")
     if stats.get("missing"):
         print(f"未收录   : {stats['missing']} 部（三个渠道都没成功，python -m galsave missing 查看）")
+    if stats.get("passwords"):
+        print(f"解压码   : {stats['passwords']} 部（python -m galsave passwords 查看）")
+    print(f"已收录台账: {stats['entries']} 部（python -m galsave catalog 查看；抓取按 vndb_id 去重）")
     print(f"C 源本批 : {stats['c_quota_gb']:.2f}GB / {float(cfg.get('c_quota_per_batch_gb') or 0):.0f}GB")
 
     from .downloader.torrent import Aria2Downloader
@@ -163,23 +173,59 @@ def cmd_dryrun(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     cfg = _bootstrap(args)
-    from .scheduler import Scheduler
-
     buckets = None
     if args.buckets:
         buckets = [float(x) for x in str(args.buckets).replace(" ", "").split(",") if x]
-    scheduler = Scheduler(cfg)
+    run_kwargs = {
+        "buckets": buckets,
+        "max_vns": args.max_vns,
+        "skip_retries": bool(args.no_retries),
+        "max_minutes": float(getattr(args, "max_minutes", 0) or 0) or None,
+    }
+    skip: set[str] = set()
     if args.skip:
         skip = {x.strip() for x in str(args.skip).replace("，", ",").split(",") if x.strip()}
         bad = skip - {"share", "direct", "magnet"}
         if bad:
             print(f"未知来源: {'、'.join(sorted(bad))}（只能是 share / direct / magnet）")
             return 2
-        scheduler.skip_types = skip
         print(f"本轮跳过来源: {'、'.join(sorted(skip))}")
-    summary = scheduler.run(buckets=buckets, max_vns=args.max_vns, skip_retries=args.no_retries)
+
+    if getattr(args, "guarded", False):
+        from .guardian import run_guarded
+
+        summary = run_guarded(cfg, run_kwargs, skip_types=skip or None)
+    else:
+        from .scheduler import Scheduler
+
+        scheduler = Scheduler(cfg)
+        if skip:
+            scheduler.skip_types = skip
+        summary = scheduler.run(**run_kwargs)
+
     print(f"\n本次成功 {summary['success']} 部，失败 {summary['failed']} 部，"
           f"累计 {summary['total_gb']:.2f}GB / {summary['entries']} 部")
+    return 0
+
+
+def cmd_guard(args: argparse.Namespace) -> int:
+    """Cursor 断连后的本地守护：看心跳、退避断网、必要时问 DeepSeek 再拉起 run。"""
+    cfg = _bootstrap(args)
+    from .guardian import guard_loop
+
+    return guard_loop(cfg, once=bool(args.once))
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
+    """把当前状态发给 DeepSeek，打印建议的安全动作 JSON。"""
+    cfg = _bootstrap(args)
+    from .deepseek_ops import ask, build_context
+
+    print("—— 当前上下文（也会发给模型）——")
+    print(build_context(cfg))
+    print("—— DeepSeek 决策 ——")
+    decision = ask(cfg, question=str(args.question or ""))
+    print(json.dumps(decision, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -241,6 +287,71 @@ def cmd_magnets(args: argparse.Namespace) -> int:
         for line in lines:
             print(line)
     print(f"\n共 {len(rows)} 条待处理（磁力离线已不可用，需要用本地 BT 客户端或其它方式自行处理）")
+    return 0
+
+
+def cmd_catalog(args: argparse.Namespace) -> int:
+    """导出已收录台账（与 done 表一致，后续抓取靠此去重）。"""
+    cfg = _bootstrap(args)
+    from .catalog import sync
+
+    db = TaskDB(cpath(cfg, "paths.db"))
+    path = sync(cfg, db)
+    rows = db.all_done()
+    print(f"已收录文档: {path}（{len(rows)} 部）")
+    for row in rows[:50]:
+        print(f"  {row.get('vndb_id')}  {row.get('title')}  {float(row.get('size_gb') or 0):.2f}GB  [{row.get('source_type')}]")
+    if len(rows) > 50:
+        print(f"  …还有 {len(rows) - 50} 部，见文档")
+    return 0
+
+
+def cmd_adopt(args: argparse.Namespace) -> int:
+    """扫描网盘根目录，把库里没有的 v编号 目录补进 done，避免重复抓。"""
+    cfg = _bootstrap(args)
+    from baidu_cloud import BaiduClient
+
+    from .adopt import apply_adopt, plan_adopt
+
+    db = TaskDB(cpath(cfg, "paths.db"))
+    client = BaiduClient()
+    if not client.check_login():
+        print("百度网盘登录信息无效或过期，请执行: python -m galsave login")
+        return 1
+    root = str((cfg.get("baidu") or {}).get("root_dir") or "/gal_save")
+    items = plan_adopt(client, db, root)
+    adopt_n = sum(1 for i in items if i.action == "adopt")
+    skip_n = sum(1 for i in items if i.action == "skip")
+    bad_n = sum(1 for i in items if i.action == "bad")
+    for item in items:
+        mark = {"adopt": "+", "skip": "=", "bad": "!"}[item.action]
+        print(f"  [{mark}] {item.vndb_id}  {item.title}  {item.size_gb:.2f}GB  {item.note}")
+    print(f"\n扫描 {len(items)} 个规范目录：待补 {adopt_n}，已有 {skip_n}，异常 {bad_n}")
+    if not args.apply:
+        print("（只看计划，加 --apply 才会写入 done 表）")
+        return 0
+    n = apply_adopt(db, cfg, items)
+    print(f"已补登记 {n} 部。之后抓取会跳过这些 vndb_id。")
+    return 0
+
+
+def cmd_passwords(args: argparse.Namespace) -> int:
+    """转存入库的解压码：导出到工作区根目录文档。"""
+    cfg = _bootstrap(args)
+    from .passwords import sync, write_passwords
+
+    db = TaskDB(cpath(cfg, "paths.db"))
+    rows = db.passwords(limit=args.limit or 0)
+    path = sync(cfg, db) if not args.limit else write_passwords(cfg, rows)
+    print(f"解压码文档: {path}（{len(rows)} 部）")
+    if not rows:
+        print("还没有通过转存登记的解压码。")
+        return 0
+    for row in rows[:50]:
+        code = row.get("archive_password") or "（未提供）"
+        print(f"  {row.get('vndb_id')}  {row.get('title')}  →  {code}")
+    if len(rows) > 50:
+        print(f"  …还有 {len(rows) - 50} 部，见文档")
     return 0
 
 
@@ -311,7 +422,7 @@ def cmd_prune(args: argparse.Namespace) -> int:
         print("没有入库记录。")
         return 0
 
-    threshold = float(args.threshold or (cfg.get("prune") or {}).get("threshold_gb") or 9.0)
+    threshold = float(args.threshold or (cfg.get("prune") or {}).get("threshold_gb") or 4.0)
     client = BaiduClient()
     if not client.check_login():
         print("百度网盘登录信息无效或过期，请执行: python -m galsave login")
@@ -374,6 +485,14 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     return run_selftest()
 
 
+def cmd_watch(args: argparse.Namespace) -> int:
+    """打开实时状态窗；只读日志和数据库，不会开跑抓取。"""
+    cfg = _bootstrap(args)
+    from .watch import run_watch
+
+    return run_watch(cfg)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m galsave",
@@ -406,7 +525,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--max-vns", type=int, default=0, help="本次最多处理几部（0=不限）")
     p_run.add_argument("--no-retries", action="store_true", help="跳过重试队列")
     p_run.add_argument("--skip", help="本轮跳过的来源，逗号分隔：share,direct,magnet（--skip direct 就完全不占校园流量）")
+    p_run.add_argument("--guarded", action="store_true",
+                       help="带进程锁+心跳（给 guard 拉起用；Cursor 断连后可续跑）")
+    p_run.add_argument("--max-minutes", type=float, default=0,
+                       help="按时间软停：到点后不再开新作品，手头下载/转存/上传继续跑完（测速用）")
     p_run.set_defaults(func=cmd_run)
+
+    p_guard = sub.add_parser("guard", help="本地守护：断连/崩溃后自动续跑，卡住可问 DeepSeek")
+    p_guard.add_argument("--once", action="store_true", help="只检查一轮就退出")
+    p_guard.set_defaults(func=cmd_guard)
+
+    p_ask = sub.add_parser("ask", help="把当前状态交给 DeepSeek，返回下一步安全动作 JSON")
+    p_ask.add_argument("question", nargs="?", default="", help="额外约束/问题")
+    p_ask.set_defaults(func=cmd_ask)
 
     p_quota = sub.add_parser("quota", help="查网盘容量")
     p_quota.add_argument("--reset", action="store_true", help="把 C 源本批配额清零，开始新一批")
@@ -425,6 +556,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_missing.add_argument("--limit", type=int, default=0, help="只看最近 N 条")
     p_missing.set_defaults(func=cmd_missing)
 
+    p_pw = sub.add_parser("passwords", help="转存入库的解压码一览（导出成工作区根目录文档）")
+    p_pw.add_argument("--limit", type=int, default=0, help="只看最近 N 条")
+    p_pw.set_defaults(func=cmd_passwords)
+
+    p_cat = sub.add_parser("catalog", help="已收录台账（导出文档；抓取按 vndb_id 去重）")
+    p_cat.set_defaults(func=cmd_catalog)
+
+    p_adopt = sub.add_parser("adopt", help="扫描网盘已有目录，补进 done 表避免重复抓")
+    p_adopt.add_argument("--apply", action="store_true", help="真的写入数据库（默认只看计划）")
+    p_adopt.set_defaults(func=cmd_adopt)
+
     p_prune = sub.add_parser("prune", help="体检已入库目录：诱饵分享删掉，多平台包只留 PC")
     p_prune.add_argument("--apply", action="store_true", help="真的删除（默认只报告）")
     p_prune.add_argument("--id", help="只处理某一部，如 v19073")
@@ -438,6 +580,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dec.set_defaults(func=cmd_decrypt)
 
     sub.add_parser("selftest", help="本地自检（不联网）").set_defaults(func=cmd_selftest)
+    sub.add_parser("watch", help="实时状态窗：抓取进度 / 下载速度 / 转存情况").set_defaults(func=cmd_watch)
     return parser
 
 

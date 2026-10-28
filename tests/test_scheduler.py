@@ -181,6 +181,23 @@ class SchedulerDecisionTest(unittest.TestCase):
         self.assertEqual(saver.saved, [])  # 没再去调离线接口
         self.assertEqual(len(self.db.pending_magnets()), 1)
 
+    def test_magnet_tries_are_capped_per_vn(self) -> None:
+        """老磁力基本没种：一部只真试 max_magnet_tries 条，其余只登记。"""
+        resources = [
+            make_resource(link="magnet:?xt=urn:btih:aaaa"),
+            make_resource(link="magnet:?xt=urn:btih:bbbb"),
+            make_resource(link="magnet:?xt=urn:btih:cccc"),
+        ]
+        saver = FakeSaver([SaveResult(ok=False, route=SOURCE_MAGNET, site="ggbase", error="离线任务失败")])
+        self._install([make_vn()], resources, saver)
+        self.sched.max_magnet_tries = 1
+        self.sched.run(skip_retries=True)
+        self.assertEqual(len(saver.saved), 1)  # 只真下了第一条
+        # magnet_pending 以 vndb_id 为主键，一部作品只留最后登记的那条磁力
+        pending = self.db.pending_magnets()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["magnet"], "magnet:?xt=urn:btih:cccc")
+
     def test_resource_over_limit_is_skipped(self) -> None:
         saver = FakeSaver([SaveResult(ok=True, route=SOURCE_MAGNET, site="ggbase", cloud_path="/p", size_gb=1.0)])
         self.sched.max_total_gb = 1.0

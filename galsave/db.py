@@ -75,6 +75,18 @@ CREATE TABLE IF NOT EXISTS missing (
     reason  TEXT,
     ts      INTEGER NOT NULL
 );
+
+-- 转存成功时登记的解压码（archive_password）与分享提取码
+CREATE TABLE IF NOT EXISTS passwords (
+    vndb_id           TEXT PRIMARY KEY,
+    title             TEXT,
+    archive_password  TEXT,
+    share_pwd         TEXT,
+    site              TEXT,
+    detail_url        TEXT,
+    resource_link     TEXT,
+    ts                INTEGER NOT NULL
+);
 """
 
 
@@ -248,6 +260,62 @@ class TaskDB:
         rows = self._query("SELECT COUNT(*) AS n FROM missing")
         return int(rows[0]["n"]) if rows else 0
 
+    # ---------- 解压码 ----------
+    def set_password(
+        self,
+        vndb_id: str,
+        title: str,
+        archive_password: str = "",
+        share_pwd: str = "",
+        site: str = "kungal",
+        detail_url: str = "",
+        resource_link: str = "",
+    ) -> None:
+        """转存成功后登记解压码；同一部作品覆盖更新。"""
+        if not vndb_id:
+            return
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO passwords (vndb_id, title, archive_password, share_pwd, site,
+                                      detail_url, resource_link, ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(vndb_id) DO UPDATE SET
+                    title=excluded.title,
+                    archive_password=excluded.archive_password,
+                    share_pwd=excluded.share_pwd,
+                    site=excluded.site,
+                    detail_url=excluded.detail_url,
+                    resource_link=excluded.resource_link,
+                    ts=excluded.ts
+                """,
+                (
+                    str(vndb_id),
+                    str(title or "")[:200],
+                    str(archive_password or "")[:120],
+                    str(share_pwd or "")[:64],
+                    str(site or "")[:40],
+                    str(detail_url or "")[:400],
+                    str(resource_link or "")[:500],
+                    int(time.time()),
+                ),
+            )
+            self._conn.commit()
+
+    def passwords(self, limit: int = 0) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM passwords ORDER BY ts DESC"
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        return [dict(row) for row in self._query(sql)]
+
+    def count_passwords(self) -> int:
+        rows = self._query("SELECT COUNT(*) AS n FROM passwords")
+        return int(rows[0]["n"]) if rows else 0
+
+    def get_password(self, vndb_id: str) -> dict[str, Any] | None:
+        rows = self._query("SELECT * FROM passwords WHERE vndb_id = ?", (str(vndb_id),))
+        return dict(rows[0]) if rows else None
+
     # ---------- retry ----------
     def add_retry(
         self,
@@ -378,6 +446,7 @@ class TaskDB:
             "retry": self.retry_count(),
             "pending_magnet": self.count_pending_magnets(),
             "missing": self.count_missing(),
+            "passwords": self.count_passwords(),
             "c_quota_gb": self.c_quota_used_gb(),
             "db": str(self.path),
         }
