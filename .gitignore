@@ -24,3 +24,8 @@ android/vndb-debug.keystore
 galsave/data/
 galsave/logs/
 config.local.yaml
+
+# 文档默认写到工作区根目录；仓库根目录被测试误建的直接忽略
+/已收录作品.md
+/解压码.md
+/未收录作品.md
