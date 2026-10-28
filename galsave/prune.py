@@ -31,6 +31,22 @@ GAME_EXTS = {
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".flv", ".rmvb", ".rm", ".webm", ".ts", ".m4v", ".mov"}
 DOC_EXTS = {".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".txt", ".csv", ".chm"}
 
+# 分卷压缩包的后缀不是 .7z 而是 .7z.001 / .part1.rar / .r00 / .z01
+# 实测 Rance Ⅹ 的汉化版就是 Rance10_CN.7z.001~.004，早期版本当成"未知格式"误删了
+_SPLIT_RE = re.compile(
+    r"\.(?:7z|zip|rar|tar|gz|bz2|xz|zst)\.\d{3}$"  # xxx.7z.001
+    r"|\.part\d+\.rar$"                            # xxx.part1.rar
+    r"|\.r\d{2}$"                                  # xxx.r00
+    r"|\.z\d{2}$"                                  # xxx.z01
+    r"|\.\d{3}$",                                  # xxx.001（裸分卷）
+    re.I,
+)
+
+
+def is_archive_segment(name: str) -> bool:
+    """分卷压缩包的一段（.7z.001 这类）。"""
+    return bool(_SPLIT_RE.search(str(name or "")))
+
 _ANDROID_ASCII = re.compile(
     r"(?<![a-z0-9])(?:android|apk|xapk|krkr|krkrz|kr|tyranor|winlator|exagear|ons|kirikiroid|obb|mobile|droid)(?![a-z0-9])",
     re.I,
@@ -111,6 +127,11 @@ class Entry:
     def size_gb(self) -> float:
         return self.size / 1e9
 
+    @property
+    def is_archive(self) -> bool:
+        """压缩包本体或分卷的一段（.7z.001 / .r00 / .part1.rar）。"""
+        return self.suffix in GAME_EXTS or is_archive_segment(self.name)
+
 
 @dataclass
 class Report:
@@ -143,6 +164,9 @@ def make_entries(items: Iterable[dict[str, Any]], prefix: str = "") -> list[Entr
     """把 `list_dir` 的原始 item 转成 Entry 列表。"""
     out: list[Entry] = []
     for item in items:
+        if isinstance(item, Entry):
+            out.append(item)
+            continue
         name = str(item.get("server_filename") or item.get("name") or "").strip()
         if not name:
             continue
@@ -162,7 +186,7 @@ def check_game_like(entries: Iterable[Entry]) -> Report:
     """按字节占比判断这批文件是不是游戏本体。"""
     files = [e for e in entries if not e.isdir]
     total = sum(e.size for e in files)
-    game = sum(e.size for e in files if e.suffix in GAME_EXTS)
+    game = sum(e.size for e in files if e.is_archive)
     junk = sum(e.size for e in files if e.suffix in VIDEO_EXTS or e.suffix in DOC_EXTS)
     rep = Report(ok=False, reason="", total_gb=total / 1e9, game_gb=game / 1e9, junk_gb=junk / 1e9,
                  entries=list(entries))
