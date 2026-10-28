@@ -136,6 +136,14 @@ class CloudSaver:
     def save_direct(self, url: str, title: str, referer: str = "", site: str = "shinnku") -> SaveResult:
         if not url:
             return SaveResult(False, "direct", site, error="直链为空")
+        remaining = self.c_remaining_gb()
+        # 先看体积再决定下不下：C 源花的是校园流量，不能下完才发现配额不够
+        expected_bytes, _ = self._downloader.probe(url, referer=referer)
+        if expected_bytes:
+            expected_gb = round(expected_bytes / (1024 ** 3), 3)
+            if expected_gb > remaining:
+                return SaveResult(False, "direct", site,
+                                  error=f"本批 C 源配额只剩 {remaining:.2f}GB，这部要 {expected_gb:.2f}GB")
         try:
             local = self._downloader.download(url, _local_name(url, title), referer=referer)
         except (DownloadError, OSError) as exc:

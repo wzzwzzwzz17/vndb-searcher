@@ -137,7 +137,7 @@ cd vndb-searcher
 python -m baidu_cloud.auth login
 ```
 
-- 本机装了 playwright（`pip install playwright && playwright install chromium`）时：弹出真实浏览器窗口打开 pan.baidu.com，你手动扫码或输密码登录；脚本检测到登录成功（BDUSS）后自动保存凭据并关窗。
+- 本机装了 playwright（`pip install playwright && playwright install chromium`）时：弹出真实浏览器窗口打开 pan.baidu.com，你手动扫码或输密码登录；脚本等到 `STOKEN` 落地、并且调接口确认登录态有效之后才保存凭据并关窗，所以你慢慢来也不会存错。
 - 没装 playwright 时：用系统默认浏览器打开登录页，你登录后按提示把 Cookie 行粘贴回终端，脚本解析出 BDUSS / STOKEN 保存。
 - 凭据保存在 `baidu_cloud/credentials.json`（已加入 .gitignore，不会提交），`status` 查看状态，`clear` 删除。
 
@@ -206,12 +206,15 @@ VNDB 的 `olang` 字段是「官方原始语言」。`galsave/vndb.py` 在 VNDB 
 
 ### 百度网盘登录
 
-需要登录信息的时候，程序会自己打开一个**真实浏览器窗口**让你本人登录（playwright，有头模式），检测到登录 Cookie 就自动保存到 `baidu_cloud/credentials.json`（已在 `.gitignore` 里，只存本机）。没装 playwright 时退化成「系统浏览器 + 粘贴 Cookie」。
+需要登录信息的时候，程序会自己打开一个**真实浏览器窗口**让你本人登录（playwright，有头模式），确认登录态真的可用之后才保存到 `baidu_cloud/credentials.json`（已在 `.gitignore` 里，只存本机）。没装 playwright 时退化成「系统浏览器 + 粘贴 Cookie」。
+
+判据不是「看到 BDUSS 就关窗」：新设备登录时 BDUSS 会先落地，`STOKEN` 等 Cookie 要等跳进网盘主界面才下发，早关窗会存下半截凭据（接口仍回「用户未登录」）。所以要求 BDUSS 之外还有 `STOKEN` 或页面已在 `/disk/home`，保存后立刻调一次 `/api/quota` 验证，不通过就删掉刚存的凭据、窗口继续开着等你完成验证。
 
 ```bash
-python -m baidu_cloud.auth login     # 打开浏览器窗口登录
-python -m baidu_cloud.auth status    # 看当前是否已登录
-python -m baidu_cloud.auth clear     # 清掉本机凭据
+python -m baidu_cloud.auth login              # 打开浏览器窗口登录
+python -m baidu_cloud.auth login --force      # 凭据过期时强制重登
+python -m baidu_cloud.auth status             # 看当前是否已登录（会真调一次接口）
+python -m baidu_cloud.auth clear              # 清掉本机凭据
 ```
 
 ### 命令

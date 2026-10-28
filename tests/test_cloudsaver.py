@@ -25,12 +25,16 @@ from galsave.db import TaskDB
 class FakeDownloader:
     """假下载器：直接写一个文件，记录调用。"""
 
-    def __init__(self, root: Path, size_bytes: int = 8 * 1024 * 1024):
+    def __init__(self, root: Path, size_bytes: int = 8 * 1024 * 1024, probe_bytes: int | None = 8 * 1024 * 1024):
         self.root = root
         self.tmp_dir = root / "tmp"
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
         self.size_bytes = size_bytes
+        self.probe_bytes = probe_bytes
         self.downloaded: list[str] = []
+
+    def probe(self, url: str, referer: str = "") -> tuple[int, bool]:
+        return (self.probe_bytes or 0), True
 
     def download(self, url: str, filename: str, referer: str = "", progress=None, retries: int = 3) -> Path:
         self.downloaded.append(filename)
@@ -84,6 +88,15 @@ class FakeUploader:
         return True
 
 
+class FakeClient:
+    """假网盘客户端：只提供 baidu_cloud 各模块会碰到的属性。"""
+
+    app_id = "250528"
+
+    def require_login(self) -> "FakeClient":
+        return self
+
+
 class CloudSaverRouteTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -92,6 +105,8 @@ class CloudSaverRouteTest(unittest.TestCase):
         self.cfg["encrypt"] = {"enabled": True, "password": "test-pass"}
         self.db = TaskDB(self.root / "task.db")
         self.saver = CloudSaver(self.cfg, self.db)
+        # 直接塞假客户端：这些用例不该碰本机 credentials.json，也不该联网
+        self.saver._client = FakeClient()
         self.saver._downloader = FakeDownloader(self.root)
         FakeOffline.instances.clear()
         FakeUploader.uploaded.clear()
@@ -151,6 +166,22 @@ class CloudSaverRouteTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("配额", result.error)
         self.assertEqual(FakeUploader.uploaded, [])
+
+    def test_direct_checks_quota_before_downloading(self) -> None:
+        # 校园流量很贵：体积能从头拿到时，配额不够就根本不该开下
+        self.db.add_c_gb(499.99)
+        self.saver._downloader.probe_bytes = 200 * 1024 * 1024
+        result = self.saver.save_direct("https://zd.shinnku.top/file/big.rar", "でかい")
+        self.assertFalse(result.ok)
+        self.assertIn("配额", result.error)
+        self.assertEqual(self.saver._downloader.downloaded, [])
+
+    def test_direct_downloads_when_size_unknown(self) -> None:
+        # 服务器不给 Content-Length 时只能先下再核（这里配额充足）
+        self.saver._downloader.probe_bytes = None
+        result = self.saver.save_direct("https://zd.shinnku.top/file/unknown.rar", "不明サイズ")
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(len(self.saver._downloader.downloaded), 1)
 
     def test_size_out_of_range_rejected(self) -> None:
         res = Resource(site="ggbase", source_type=SOURCE_MAGNET, title="x",

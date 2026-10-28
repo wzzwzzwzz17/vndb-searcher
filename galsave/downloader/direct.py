@@ -43,6 +43,23 @@ class DirectDownloader:
     def _default_tmp() -> Path:
         return Path(__file__).resolve().parent.parent / "data" / "tmp"
 
+    def probe(self, url: str, referer: str = "") -> tuple[int, bool]:
+        """只看响应头，返回 (字节数, 是否支持续传)；拿不到就返回 (0, False)。
+
+        用来在真的开下之前判断「这批配额够不够」，避免先把校园流量花掉再拒绝。
+        """
+        if not url:
+            return 0, False
+        headers = {"Referer": referer} if referer else {}
+        try:
+            head = self.session.head(url, timeout=self.timeout, headers=headers, allow_redirects=True)
+            total = int(head.headers.get("Content-Length") or 0)
+            accepts = head.headers.get("Accept-Ranges", "").lower() == "bytes"
+            return total, accepts
+        except (requests.RequestException, ValueError) as exc:
+            self.log.debug("探测直链体积失败 %s: %s", url[:80], exc)
+            return 0, False
+
     def download(
         self,
         url: str,
