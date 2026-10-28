@@ -255,6 +255,18 @@ VNDB 的 `olang` 字段是「官方原始语言」。`galsave/vndb.py` 在 VNDB 
 
 转存还有个细节：分享自带的根目录会让网盘里多套一层（`v123 名/v123 名/文件`），转存完会检查「目录里只有一个子目录」就把子目录提上来，保持一部作品一个平铺目录；`done.cloud_path` 记的永远是 `v<编号> <日文名>` 这一层。
 
+### 三个渠道都没捞到怎么办
+
+优先级固定是 **鲲转存 > 真红直链 > ggbase 磁力**，一部作品成功入库后就不会再用别的源重复保存。三个渠道都失败（或者压根没有候选）时，程序不会只是在日志里一闪而过：会写进工作区根目录的 **`未收录作品.md`**（路径由 `paths.missing_doc` 决定，默认 `../未收录作品.md`，即仓库上一级）。
+
+文档是整篇重写的表格，和数据库 `missing` 表完全一致，所以：
+
+- 同一部作品反复失败不会重复堆行，只会更新原因和时间；
+- 之后某次真的捞到了，`mark_done` 会把它从 `missing` 表删掉，下次导出时这一行自动消失；
+- `python -m galsave missing` 可以直接看当前清单并立即重写文档。
+
+每行的「原因」记录的是这次失败的具体情况，比如「kungal 失败：分享已失效（31066）；磁力离线不可用；shinnku 体积超上限」。
+
 ### 分级队列与停机
 
 `rating_buckets: [8.0, 7.5, 7.0, 6.5, 6.0]`：先从 8.0 分以上捞，捞完这一档再往下走一档，不会一上来就把 6 分档掺进来。累计入库达到 `max_total_gb: 4000` 就软停机：不再接新作品，把手上这一条做完。
@@ -289,6 +301,7 @@ python -m galsave run --skip direct   # 这一轮完全不下载直链（不占�
 python -m galsave quota              # 只看 4TB / 500GB 配额
 python -m galsave quota --reset      # C 源 500GB 用完后换新的一批（配额清零，账不会丢）
 python -m galsave magnets --out magnets.txt   # 导出网盘收不了的磁力清单（自己用 BT 客户端处理）
+python -m galsave missing                     # 三个渠道都没捞到的作品 → 工作区根目录 未收录作品.md
 python -m galsave reorg              # 看现有网盘目录该怎么改成 v<编号> <日文名>
 python -m galsave reorg --apply      # 真的在网盘里改名/移动到规范结构
 python -m galsave prune              # 体检已入库目录：诱饵分享、多平台包里的非 PC 文件
@@ -310,7 +323,7 @@ python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载
 
 ### 数据与测试
 
-- 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` / `magnet_pending` / `bad_link` 六张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。
+- 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` / `magnet_pending` / `bad_link` / `missing` 七张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。三个渠道都失败的清单另外导出成工作区根目录的 `未收录作品.md`。
 - 测试：`python -m unittest discover -s tests -t .`（188 项，全部离线夹具，不联网）；`python -m galsave selftest` 是 19 项纯本地自检。
 
 ### 已知局限

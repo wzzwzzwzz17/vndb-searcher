@@ -66,6 +66,15 @@ CREATE TABLE IF NOT EXISTS bad_link (
     reason TEXT,
     ts     INTEGER NOT NULL
 );
+
+-- 三个渠道都没捞到的作品，导出成根目录的文档给人看
+CREATE TABLE IF NOT EXISTS missing (
+    vndb_id TEXT PRIMARY KEY,
+    title   TEXT,
+    rating  REAL,
+    reason  TEXT,
+    ts      INTEGER NOT NULL
+);
 """
 
 
@@ -144,6 +153,7 @@ class TaskDB:
             )
             self._conn.execute("DELETE FROM retry WHERE vndb_id = ?", (vndb_id,))
             self._conn.execute("DELETE FROM magnet_pending WHERE vndb_id = ?", (vndb_id,))
+            self._conn.execute("DELETE FROM missing WHERE vndb_id = ?", (vndb_id,))
             self._conn.commit()
 
     def total_gb(self) -> float:
@@ -207,6 +217,36 @@ class TaskDB:
         if limit:
             sql += f" LIMIT {int(limit)}"
         return [dict(row) for row in self._query(sql)]
+
+    # ---------- 三个渠道都没捞到 ----------
+    def add_missing(self, vndb_id: str, title: str, rating: float = 0.0, reason: str = "") -> None:
+        """记下这部作品三渠道都没成功，导出成根目录文档给人看。"""
+        if not vndb_id:
+            return
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO missing (vndb_id, title, rating, reason, ts) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(vndb_id) DO UPDATE SET title=excluded.title, rating=excluded.rating, "
+                "reason=excluded.reason, ts=excluded.ts",
+                (str(vndb_id), str(title)[:200], float(rating or 0), str(reason)[:400], int(time.time())),
+            )
+            self._conn.commit()
+
+    def forget_missing(self, vndb_id: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM missing WHERE vndb_id = ?", (str(vndb_id),))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def missing(self, limit: int = 0) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM missing ORDER BY rating DESC, ts DESC"
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        return [dict(row) for row in self._query(sql)]
+
+    def count_missing(self) -> int:
+        rows = self._query("SELECT COUNT(*) AS n FROM missing")
+        return int(rows[0]["n"]) if rows else 0
 
     # ---------- retry ----------
     def add_retry(
@@ -337,6 +377,7 @@ class TaskDB:
             "by_source": self.count_by_source(),
             "retry": self.retry_count(),
             "pending_magnet": self.count_pending_magnets(),
+            "missing": self.count_missing(),
             "c_quota_gb": self.c_quota_used_gb(),
             "db": str(self.path),
         }

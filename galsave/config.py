@@ -98,6 +98,7 @@ DEFAULTS: dict[str, Any] = {
     "paths": {
         "db": "galsave/data/task.db",
         "log_dir": "galsave/logs",
+        "missing_doc": "../未收录作品.md",
     },
 }
 

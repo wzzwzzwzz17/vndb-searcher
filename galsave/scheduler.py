@@ -23,6 +23,7 @@ from .crawler import SearchEngine
 from .crawler.base import SOURCE_DIRECT, SOURCE_MAGNET, SOURCE_SHARE
 from .db import TaskDB
 from .logger import get_logger, setup_logging
+from .notebook import sync as notebook_export
 from .vndb import Vn, VndbClient, VndbError
 
 
@@ -54,6 +55,11 @@ class Scheduler:
         self.c_ok = True
         # 命令行 --skip 指定的来源，整轮都不碰（比如 --skip direct 就完全不占校园流量）
         self.skip_types: set[str] = set()
+        # 未收录清单导出到哪里（notebook.doc_path 决定）
+        try:
+            self.missing_path = notebook_export(self.cfg, self.db)
+        except OSError:
+            self.missing_path = cpath(self.cfg, "paths.log_dir") / "未收录作品.md"
 
     # ---------- 上限 ----------
     def total_gb(self) -> float:
@@ -198,17 +204,26 @@ class Scheduler:
 
     def _summary(self, started: float) -> dict[str, Any]:
         elapsed = time.time() - started
+        missing = self.db.count_missing()
         summary = {
             **self.stats,
             "total_gb": self.total_gb(),
             "entries": self.db.count_done(),
+            "missing": missing,
             "elapsed_min": round(elapsed / 60, 1),
         }
+        # 把「三个渠道都没捞到」的作品落到工作区根目录的文档里
+        try:
+            self.missing_path = notebook_export(self.cfg, self.db)
+        except OSError as exc:  # noqa: BLE001
+            self.log.warning("未收录清单写不出去: %s", exc)
         self.log.info(
             "结束：本次成功 %d，跳过 %d，失败 %d，共 %.2fGB / %d 部，用时 %.1f 分钟",
             summary["success"], summary["skipped"], summary["failed"],
             summary["total_gb"], summary["entries"], summary["elapsed_min"],
         )
+        if missing:
+            self.log.info("未收录清单：%d 部 → %s", missing, self.missing_path)
         return summary
 
     # ---------- 单部作品 ----------
@@ -235,9 +250,11 @@ class Scheduler:
         if not resources:
             self.log.info("  三站都没找到匹配资源")
             self.db.add_retry(vn.id, "search", "all", "三站无匹配", self.max_retry)
+            self._record_missing(vn, "三站都没有匹配资源")
             self.stats["failed"] += 1
             return False
 
+        notes: list[str] = []
         for res in resources:
             if self.reached_limit():
                 return False
@@ -250,22 +267,26 @@ class Scheduler:
             except Exception as exc:  # noqa: BLE001 - 单个资源解析失败继续下一条
                 self.log.warning("  解析 %s 链接失败: %s", res.site, exc)
                 self.db.add_retry(vn.id, res.source_type, res.site, str(exc), self.max_retry)
+                notes.append(f"{res.site} 链接解析失败")
                 continue
 
             if res.link and self.db.is_bad_link(res.link):
                 self.log.info("  跳过已知是诱饵/空壳的分享（%s）", res.site)
                 self.stats["skipped"] += 1
+                notes.append(f"{res.site} 是已知诱饵")
                 continue
 
             projected = self.total_gb() + float(res.size_gb or 0)
             if res.size_gb and projected > self.max_total_gb:
                 self.log.info("  跳过 %.2fGB 的 %s（会超过总上限）", res.size_gb, res.site)
+                notes.append(f"{res.site} 体积超上限")
                 continue
 
             self.log.info("  尝试 %s", res)
             if res.source_type == SOURCE_MAGNET and not self.magnet_ok:
                 # 已知网盘不收磁力离线：不再白发请求，直接登记待处理
                 self._record_pending_magnet(vn, res)
+                notes.append("磁力离线不可用")
                 continue
             result = self.saver.save(res, vndb_id=vn.id, name=vn.preferred_name)
             if result.ok:
@@ -285,6 +306,7 @@ class Scheduler:
                 return True
 
             self.log.warning("  ✗ %s", result.error)
+            notes.append(f"{result.route or res.source_type} 失败：{str(result.error)[:60]}")
             if MAGNET_UNSUPPORTED in str(result.error):
                 # 百度网盘不再接受磁力离线：之后每条磁力都只登记、不再调接口
                 self.magnet_ok = False
@@ -306,8 +328,18 @@ class Scheduler:
                 self.log.warning("百度转存被限流，本轮不再尝试转存（下次运行会自动恢复）")
             self.db.add_retry(vn.id, result.route, res.site, result.error, self.max_retry)
 
+        self._record_missing(vn, "；".join(notes))
         self.stats["failed"] += 1
         return False
+
+    def _record_missing(self, vn: Vn, reason: str = "") -> None:
+        """三个渠道都没成功：记进 missing 表，run 结束时会导出成根目录文档。"""
+        self.db.add_missing(vn.id, vn.preferred_name, vn.display_rating, reason)
+        try:
+            self.missing_path = notebook_export(self.cfg, self.db)
+        except OSError as exc:  # noqa: BLE001 - 文档写不出去不该让主循环崩
+            self.log.warning("  未收录清单写不出去: %s", exc)
+        self.log.info("  记入未收录清单：%s（%s）", self.missing_path.name, reason or "无候选")
 
     def _record_pending_magnet(self, vn: Vn, res: Any, note: str = "") -> None:
         self.db.add_pending_magnet(

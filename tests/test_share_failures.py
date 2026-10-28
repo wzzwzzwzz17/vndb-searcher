@@ -53,7 +53,12 @@ class RateLimitTest(DbCase):
         db = self.make_db()
         saver = FakeSaver(SaveResult(ok=False, route="share", site="kungal",
                                      error="[baidu 4] 百度网盘转存: 请求过于频繁，被限流了"))
-        sched = Scheduler(load_config(), db=db)
+        cfg = load_config()
+        cfg["paths"] = {
+            "log_dir": str(Path(tempfile.mkdtemp(prefix="galsave-log-")) / "logs"),
+            "missing_doc": str(Path(tempfile.mkdtemp(prefix="galsave-doc-")) / "未收录作品.md"),
+        }
+        sched = Scheduler(cfg, db=db)
         sched.saver = saver
         sched.log.info = lambda *a, **k: None  # 别刷屏
         resource = Resource(site="kungal", source_type=SOURCE_SHARE, title="x",

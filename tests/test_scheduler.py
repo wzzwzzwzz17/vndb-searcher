@@ -73,7 +73,11 @@ class SchedulerDecisionTest(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         root = Path(self.tmpdir.name)
         self.cfg = load_config()
-        self.cfg["paths"] = {"db": str(root / "task.db"), "log_dir": str(root / "logs")}
+        self.cfg["paths"] = {
+            "db": str(root / "task.db"),
+            "log_dir": str(root / "logs"),
+            "missing_doc": str(root / "未收录作品.md"),
+        }
         self.cfg["rating_buckets"] = [8.0]
         self.db = TaskDB(self.cfg["paths"]["db"])
         self.sched = Scheduler(self.cfg, db=self.db)

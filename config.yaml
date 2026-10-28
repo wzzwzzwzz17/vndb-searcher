@@ -117,3 +117,5 @@ run:
 paths:
   db: galsave/data/task.db
   log_dir: galsave/logs
+  # 三个渠道都没捞到的作品会写进这个文档（相对仓库根目录）
+  missing_doc: ../未收录作品.md

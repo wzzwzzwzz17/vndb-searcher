@@ -69,6 +69,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"待重试   : {stats['retry']} 条")
     if stats.get("pending_magnet"):
         print(f"待处理磁力: {stats['pending_magnet']} 条（网盘不接受磁力离线，用 python -m galsave magnets 导出）")
+    if stats.get("missing"):
+        print(f"未收录   : {stats['missing']} 部（三个渠道都没成功，python -m galsave missing 查看）")
     print(f"C 源本批 : {stats['c_quota_gb']:.2f}GB / {float(cfg.get('c_quota_per_batch_gb') or 0):.0f}GB")
 
     from .downloader.torrent import Aria2Downloader
@@ -242,6 +244,23 @@ def cmd_magnets(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_missing(args: argparse.Namespace) -> int:
+    """三个渠道都没捞到的作品：导出或查看根目录文档。"""
+    cfg = _bootstrap(args)
+    from .notebook import sync, write_missing
+
+    db = TaskDB(cpath(cfg, "paths.db"))
+    rows = db.missing(limit=args.limit or 0)
+    path = sync(cfg, db) if not args.limit else write_missing(cfg, rows)
+    if not rows:
+        print("没有未收录作品。")
+        return 0
+    for row in rows:
+        print(f"{row['vndb_id']}  {row['title']}  {float(row['rating'] or 0):.2f}  {row['reason'] or ''}")
+    print(f"\n共 {len(rows)} 部，文档：{path}")
+    return 0
+
+
 def cmd_reorg(args: argparse.Namespace) -> int:
     """把已有入库记录整理成 /gal_save/v<编号> <日文名> 的统一结构。"""
     cfg = _bootstrap(args)
@@ -401,6 +420,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_reorg = sub.add_parser("reorg", help="整理已入库条目的云端目录（v<编号> <日文名>）")
     p_reorg.add_argument("--apply", action="store_true", help="真的移动/改名（默认只看计划）")
     p_reorg.set_defaults(func=cmd_reorg)
+
+    p_missing = sub.add_parser("missing", help="三个渠道都没捞到的作品（导出成工作区根目录文档）")
+    p_missing.add_argument("--limit", type=int, default=0, help="只看最近 N 条")
+    p_missing.set_defaults(func=cmd_missing)
 
     p_prune = sub.add_parser("prune", help="体检已入库目录：诱饵分享删掉，多平台包只留 PC")
     p_prune.add_argument("--apply", action="store_true", help="真的删除（默认只报告）")
