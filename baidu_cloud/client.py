@@ -15,8 +15,6 @@
 from __future__ import annotations
 
 import json
-import time
-from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
@@ -331,18 +329,18 @@ class BaiduClient:
 
     # ---------- Cookie 导入 ----------
     @classmethod
-    def from_cookie_text(cls, raw: str) -> "BaiduClient":
-        """从浏览器复制的一整行 Cookie 里还原客户端并保存凭据。"""
+    def from_cookie_text(cls, raw: str, save: bool = False) -> "BaiduClient":
+        """从浏览器复制的一整行 Cookie 里还原客户端。
+
+        默认**不**写本机凭据文件：只有用户明确要保存（`python -m galsave login --text`）
+        时才落盘，避免测试或临时试用的 Cookie 覆盖掉真实登录态。
+        """
         cookies = parse_cookie_text(raw)
         if not any(name == "BDUSS" for name in cookies):
             raise BaiduError(-6, "粘贴的 Cookie 里没有 BDUSS", "百度网盘")
         client = cls(cookies=cookies)
-        save = Path(auth.CREDENTIAL_FILE)
-        payload = {
-            "saved_at": int(time.time()),
-            "cookies": [{"name": k, "value": v, "domain": ".baidu.com"} for k, v in cookies.items()],
-        }
-        save.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        if save:
+            auth._save([{"name": k, "value": v, "domain": ".baidu.com"} for k, v in cookies.items()])
         return client
 
 

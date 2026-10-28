@@ -119,6 +119,23 @@ class ClientHelperTest(unittest.TestCase):
         # 没有 BDUSS 时直接返回 False，不该发任何网络请求
         self.assertFalse(BaiduClient(cookies={}).check_login())
 
+    def test_from_cookie_text_does_not_touch_local_credentials(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from baidu_cloud import auth
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cred = Path(tmp) / "credentials.json"
+            with mock.patch.object(auth, "CREDENTIAL_FILE", cred):
+                client = BaiduClient.from_cookie_text("BDUSS=abc; STOKEN=def")
+                self.assertTrue(client.logged_in)
+                self.assertFalse(cred.exists())  # 默认不落盘，别把真实登录态覆盖掉
+
+                BaiduClient.from_cookie_text("BDUSS=abc; STOKEN=def", save=True)
+                self.assertTrue(cred.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,7 +38,7 @@ def cmd_login(args: argparse.Namespace) -> int:
     if args.text:
         from baidu_cloud.client import BaiduClient
 
-        client = BaiduClient.from_cookie_text(args.text)
+        client = BaiduClient.from_cookie_text(args.text, save=True)
         if not client.check_login():
             print("粘贴的 Cookie 验证没通过（可能复制不完整或已经过期）。")
             return 1
@@ -158,6 +158,13 @@ def cmd_quota(args: argparse.Namespace) -> int:
     from baidu_cloud import BaiduClient
     from baidu_cloud.client import BaiduError
 
+    db = TaskDB(cpath(cfg, "paths.db"))
+    if args.reset:
+        used = db.c_quota_used_gb()
+        db.reset_c_quota()
+        print(f"已把 C 源配额清零（上一批用了 {used:.2f}GB），可以开始下载新一批直链了。")
+        return 0
+
     client = BaiduClient()
     if not client.check_login():
         print("百度网盘登录信息无效或过期，请执行: python -m galsave login")
@@ -172,6 +179,9 @@ def cmd_quota(args: argparse.Namespace) -> int:
     print(f"总空间 : {quota['total_gb']:.1f}GB")
     print(f"已用   : {quota['used_gb']:.1f}GB")
     print(f"剩余   : {quota['free_gb']:.1f}GB")
+    limit = float(cfg.get("c_quota_per_batch_gb") or 500)
+    print(f"C 源本批 : {db.c_quota_used_gb():.2f}GB / {limit:.0f}GB"
+          f"（换批: python -m galsave quota --reset）")
     root = str((cfg.get("baidu") or {}).get("root_dir") or "/gal_save")
     try:
         used = client.dir_size_gb(root)
@@ -239,7 +249,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--no-retries", action="store_true", help="跳过重试队列")
     p_run.set_defaults(func=cmd_run)
 
-    sub.add_parser("quota", help="查网盘容量").set_defaults(func=cmd_quota)
+    p_quota = sub.add_parser("quota", help="查网盘容量")
+    p_quota.add_argument("--reset", action="store_true", help="把 C 源本批配额清零，开始新一批")
+    p_quota.set_defaults(func=cmd_quota)
 
     p_dec = sub.add_parser("decrypt", help="还原 C 路线加密文件")
     p_dec.add_argument("file")

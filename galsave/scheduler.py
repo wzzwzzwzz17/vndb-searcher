@@ -285,6 +285,8 @@ class Scheduler:
             if source == SOURCE_MAGNET and not self.offline_ok:
                 continue
             if source == SOURCE_DIRECT and (not self.c_ok or self.saver.c_remaining_gb() <= 0):
+                if self.saver.c_remaining_gb() <= 0:
+                    self.log.warning("C 源本批配额已用完，暂时不下载直链。换批可执行: python -m galsave quota --reset")
                 continue
             allow.append(source)
         return allow

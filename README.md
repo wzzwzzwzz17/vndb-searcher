@@ -196,6 +196,8 @@ VNDB 的 `olang` 字段是「官方原始语言」。`galsave/vndb.py` 在 VNDB 
 
 `source_priority` 决定同一部作品优先试哪种来源。离线下载需要百度网盘 SVIP，普通账号会直接报「该操作需要百度网盘 SVIP（离线下载仅会员可用）」，不会静默失败。
 
+直链路线会占本地网络，所以按批计：`c_quota_per_batch_gb: 500`，用完就只用磁力和转存，直到你执行 `python -m galsave quota --reset` 开新的一批（清零的只是本批用量，已入库的账不变）。
+
 ### 分级队列与停机
 
 `rating_buckets: [8.0, 7.5, 7.0, 6.5, 6.0]`：先从 8.0 分以上捞，捞完这一档再往下走一档，不会一上来就把 6 分档掺进来。累计入库达到 `max_total_gb: 4000` 就软停机：不再接新作品，把手上这一条做完。
@@ -224,6 +226,7 @@ python -m galsave dryrun "ランス10"  # 只搜不下载，看三站各命中�
 python -m galsave run                # 正式跑
 python -m galsave run --buckets 8.0 7.5 --max-vns 20
 python -m galsave quota              # 只看 4TB / 500GB 配额
+python -m galsave quota --reset      # C 源 500GB 用完后换新的一批（配额清零，账不会丢）
 python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载的加密文件
 ```
 
