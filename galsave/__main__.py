@@ -137,7 +137,8 @@ def cmd_dryrun(args: argparse.Namespace) -> int:
             print("  三站都没有匹配资源")
             continue
         for res in found[:8]:
-            print(f"  - {res}")
+            hint = "" if res.link or res.source_type != "share" else "（真链接要正式跑时才解析）"
+            print(f"  - {res}{hint}")
     return 0
 
 

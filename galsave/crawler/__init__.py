@@ -84,7 +84,7 @@ class SearchEngine:
         return found[0] if found else None
 
     def resolve(self, res: Resource) -> Resource:
-        """把搜索结果补成可用的链接（磁力 / 直链）。"""
+        """把搜索结果补成可用的链接（磁力 / 直链 / 网盘分享）。"""
         for crawler in self.crawlers:
             if crawler.site != res.site:
                 continue
@@ -92,5 +92,7 @@ class SearchEngine:
                 crawler.resolve_magnet(res)  # type: ignore[attr-defined]
             elif res.source_type == SOURCE_DIRECT and hasattr(crawler, "resolve_direct"):
                 crawler.resolve_direct(res)  # type: ignore[attr-defined]
+            elif res.source_type == SOURCE_SHARE and hasattr(crawler, "resolve_share"):
+                crawler.resolve_share(res)  # type: ignore[attr-defined]
             return res
         raise CrawlerError(f"没有能解析 {res.site} 资源的爬虫")

@@ -7,7 +7,7 @@ import unittest
 
 from galsave.config import load_config
 from galsave.crawler import SearchEngine, build_crawlers
-from galsave.crawler.base import SOURCE_DIRECT, SOURCE_MAGNET, SOURCE_SHARE, Resource
+from galsave.crawler.base import SOURCE_DIRECT, SOURCE_MAGNET, SOURCE_SHARE, CrawlerError, Resource
 from galsave.crawler.ggbase import GgbaseCrawler, parse_rows
 from galsave.crawler.kungal import KungalCrawler, _collect_links
 from galsave.crawler.shinnku import ShinnkuCrawler, parse_cards, pick_direct_links
@@ -209,13 +209,56 @@ class KungalTest(unittest.TestCase):
              "content": {"type": "link", "url": "https://pan.baidu.com/s/1gone"}},
         ]
         found = self.crawler._resources_from_items(items, self.work, 95.0, ["ランス10"])
-        self.assertEqual(len(found), 1)
+        # 现在没有 content 链接也会成为候选（真链接要调 downloads 接口才给），
+        # 所以 id=1 与 id=5 都在；id=3 标题是工具、id=4 只有夸克、id=6 已失效、
+        # id=2 是合集，全部被筛掉。
+        self.assertEqual(len(found), 2)
         res = found[0]
         self.assertEqual(res.source_type, SOURCE_SHARE)
         self.assertIn("pwd=ab12", res.link)
         self.assertEqual(res.extra["pwd"], "ab12")
         self.assertAlmostEqual(res.size_gb, 11.11, places=2)
         self.assertEqual(res.site, "kungal")
+        self.assertEqual(found[1].link, "")
+        self.assertEqual(found[1].extra["resource_id"], "5")
+        # detail_url 必须逐条唯一，否则 _finish 会把它们全去重掉
+        self.assertEqual(len({r.detail_url for r in found}), 2)
+
+    def test_resolve_share_uses_downloads_api(self) -> None:
+        res = Resource(
+            site="kungal", source_type=SOURCE_SHARE, title="千恋＊万花",
+            link="", size_gb=32.13, detail_url="https://www.kungal.com/galgame/resource/70532",
+            extra={"resource_id": "70532", "pwd": ""},
+        )
+        calls: list[tuple[str, object, object]] = []
+
+        def fake_post(url, payload=None, **kwargs):
+            calls.append((url, payload, kwargs.get("headers")))
+            return {
+                "object": "galgame_resource_download",
+                "download_urls": ["https://pan.baidu.com/s/1N7Zv8W73rfTU7EZvei0plg?pwd=rybj"],
+                "extraction_code": "rybj",
+                "archive_password": "sakura",
+            }
+
+        self.crawler.post_json = fake_post  # type: ignore[assignment]
+        out = self.crawler.resolve_share(res)
+        self.assertIn("baidu.com/s/1N7Zv8W73rfTU7EZvei0plg", out.link)
+        self.assertEqual(out.extra["pwd"], "rybj")
+        self.assertEqual(out.extra["archive_password"], "sakura")
+        self.assertIn("/api/v1/galgame-resources/70532/downloads", calls[0][0])
+        self.assertEqual(calls[0][2], {"Accept": "application/json"})
+
+    def test_resolve_share_reports_missing_baidu_link(self) -> None:
+        res = Resource(
+            site="kungal", source_type=SOURCE_SHARE, title="x", link="", size_gb=1.0,
+            detail_url="https://www.kungal.com/galgame/resource/9",
+            extra={"resource_id": "9"},
+        )
+        self.crawler.post_json = lambda url, payload=None, **kw: {  # type: ignore[assignment]
+            "download_urls": ["https://mega.nz/file/abc"], "extraction_code": ""}
+        with self.assertRaises(CrawlerError):
+            self.crawler.resolve_share(res)
 
     def test_collection_allowed_when_configured(self) -> None:
         cfg = load_config()

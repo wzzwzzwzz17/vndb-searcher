@@ -1,4 +1,4 @@
-# VNDB搜索器
+﻿# VNDB搜索器
 
 用自然语言描述你想找的 Galgame。程序把描述变成 VNDB 官方筛选条件，返回高分作品的名称、原名、评分、中文简介、标签和 VNDB 链接，并尽量补上鲲 Galgame、TouchGal 的评分。点开作品时，给出的是这几个站上的作品参考页入口，不是压缩包、直链或磁力链接。
 
@@ -160,7 +160,7 @@ python -m baidu_cloud.auth login
 - 网页进程里填写的 Key 和 TouchGal Token 会写进当前进程的配置，同一台机器上后一次请求会盖住前一次。
 - 安卓版的 API Key 放在应用私有存储里，是明文，没有额外加密。
 - 简介和标签翻译依赖 DeepSeek，可能漏译、缩短或措辞不稳。
-- 没有自动化测试覆盖三种模式的全部筛选组合。模式规则有过手工核对；`galsave`（收藏库流水线）那一套有 83 个单元测试。
+- 没有自动化测试覆盖三种模式的全部筛选组合。模式规则有过手工核对；`galsave`（收藏库流水线）那一套有 91 个单元测试。
 - 安卓打包脚本只在 Windows 上试过，而且依赖本机已安装的 SDK，不是 Gradle 工程。
 
 ## 可以怎么优化
@@ -204,7 +204,9 @@ VNDB 的 `olang` 字段是「官方原始语言」。`galsave/vndb.py` 在 VNDB 
 
 **关于转存（实测结论）**：现在的分享页是服务端渲染的一坨 JSON，`/share/list` 之类的老接口全部报错，能用的顺序是：`GET /s/<surl>` 拿到跳转后的权威 `surl`（注意原始链接带的那个前导 `1` 是分享 ID 的一部分，`/share/verify` 要用去掉 `1` 的那段）→ `POST /share/verify` 拿 `BDCLND` Cookie → 带 Cookie 再 `GET /share/init` 读 `file_list` → `POST /share/transfer`，其中 `sekey` 必须是 **URL 解码后**的 `BDCLND`，否则回 `errno 200025 提取码输入错误`。
 
-鲲的资源条目有个坑：条目标注的体积（比如 7.46 GB）和它给的百度链接**没关系**，很多条目给的其实是「模拟器 + 解压工具」那个公共分享（实测只有几个 APK），所以 `save_share` 在转存前会先解析 `file_list` 累加真实体积，小于 `min_resource_gb`（0.3 GB）就判定「不是游戏本体」直接跳过，不浪费转存。条目自带 `state` 字段，`expired` 的分享也会提前跳过。
+鲲的资源条目还有个坑：条目标注的体积（比如 7.46 GB）和它给的百度链接**没关系**，很多条目给的其实是「模拟器 + 解压工具」那个公共分享（实测只有几个 APK）。真正的下载地址要单独调一次 `POST /api/v1/galgame-resources/{resource_id}/downloads`（不需要登录，返回 `download_urls` 和 `extraction_code`，GET 同一个路径回 405），页面上的「获取链接」按钮走的就是这个接口。所以现在搜索阶段只产出候选，等到真要转存时才 `resolve_share()` 去取真链接。
+
+`save_share` 在转存前还会先解析 `file_list` 累加真实体积，小于 `min_resource_gb`（0.3 GB）就判定「不是游戏本体」直接跳过，不浪费转存。条目自带 `state` 字段，`expired` 的分享也会提前跳过。
 
 **关于上传（实测结论）**：`/api/precreate` 必须带 `autoinit=1` 才会返回 `uploadid`（不带只有 `return_type=1` 的秒传标记）；`/api/create?a=commit` 的 `block_list` 要用真实的分片 MD5，填空串会回一个极误导的 `errno -7「该文件所在的文件夹命名不符合要求」`。另外本地文件名要先统一成正斜杠再取 basename，否则 Windows 本机路径整串会被当成文件名传上去，也是 `-7`。
 
@@ -249,13 +251,13 @@ python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载
 ### 数据与测试
 
 - 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` / `magnet_pending` 五张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。
-- 测试：`python -m unittest discover -s tests -t .`（89 项，全部离线夹具，不联网）。
+- 测试：`python -m unittest discover -s tests -t .`（91 项，全部离线夹具，不联网）。
 
 ### 已知局限
 
 - 百度网盘已经不支持磁力离线（`add_task` 对 `type=4` 恒回 `36001 param error`），所以 GGBase 这条线目前只能产出「待处理磁力清单」，真正进网盘只能靠鲲转存或真红直链。
 - 鲲的资源多为「合集」类条目，默认 `allow_collection: false` 会跳过，所以有些作品在鲲上捞不到本体。
-- 鲲很多条目标注的体积和实际分享内容无关（实测 7.46 GB 的条目里只有一个「解压工具」空目录、1.5 GB 的条目里只有 53 MB 的模拟器 APK），已经在转存前按真实 `file_list` 体积筛，但筛掉的条目就没有别的链接可用了——这类作品只能等别家站点。
+- 鲲有些作品的候选条目里，真实分享已经被替换成「模拟器 + 解压工具」打包（转存前的体积筛选会挡掉），这类作品得等别家站点。
 - 真红只有直链，走本地下载，受 500 GB/批 配额限制；合集区的直链主机和 ZD CDN 不一样，两种都支持。
 - GGBase 镜像的翻页参数无效（`p=0/1/2` 返回同一批），已按条目 ID 去重，但深层的早期资源搜不到。
 - 标题匹配用相似度（阈值 85），遇到「大戦国ランス / 戦国ランス」这种前缀只差一两个字的不同作品，靠规则压到阈值以下；极短的别名仍可能误命中，最终以 `dryrun` 的人工核对为准。

@@ -20,7 +20,7 @@ from baidu_cloud.offline import MAGNET_UNSUPPORTED
 from .cloud import CloudSaver, SaveResult
 from .config import cget, cpath
 from .crawler import SearchEngine
-from .crawler.base import SOURCE_DIRECT, SOURCE_MAGNET
+from .crawler.base import SOURCE_DIRECT, SOURCE_MAGNET, SOURCE_SHARE
 from .db import TaskDB
 from .logger import get_logger, setup_logging
 from .vndb import Vn, VndbClient, VndbError
@@ -239,7 +239,7 @@ class Scheduler:
             if self.reached_limit():
                 return False
             try:
-                if res.source_type in (SOURCE_MAGNET, SOURCE_DIRECT) and not res.link:
+                if not res.link and res.source_type in (SOURCE_MAGNET, SOURCE_DIRECT, SOURCE_SHARE):
                     self.engine.resolve(res)
             except Exception as exc:  # noqa: BLE001 - 单个资源解析失败继续下一条
                 self.log.warning("  解析 %s 链接失败: %s", res.site, exc)

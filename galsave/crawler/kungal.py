@@ -140,28 +140,32 @@ class KungalCrawler(BaseCrawler):
             if any(word in title for word in _TOOL_WORDS):
                 continue
             providers = [str(p) for p in (item.get("provider_names") or [])]
-            links = _collect_links(item.get("content"))
-            if not links:
-                continue
-            # 优先百度网盘；只有明确标了别的盘才跳过
-            link = links[0]
             if providers and not any("百度" in p for p in providers):
                 continue
+            # content 里的链接经常只是「模拟器及解压工具」那个公共分享，
+            # 真正的下载地址要 POST /api/v1/galgame-resources/{id}/downloads 才给，
+            # 所以这里只负责产出候选，链接留到 resolve_share() 再补。
+            link = ""
+            for candidate in _collect_links(item.get("content")):
+                link = candidate
+                break
             pwd = ""
             match = re.search(r"[?&]pwd=([\w]+)", link)
             if match:
                 pwd = match.group(1)
+            resource_id = str(item.get("id") or "")
             out.append(Resource(
                 site=self.site,
                 source_type=SOURCE_SHARE,
                 title=f"{title} [{work.get('display_name') or ''}]".strip(),
                 link=link,
                 size_gb=parse_size_gb(str(item.get("size") or "")),
-                detail_url=f"{self.base}/works/{work_id}/resources",
+                detail_url=(f"{self.base}/galgame/resource/{resource_id}" if resource_id
+                            else f"{self.base}/works/{work_id}/resources"),
                 match_score=score,
                 extra={
                     "work_id": work_id,
-                    "resource_id": item.get("id"),
+                    "resource_id": resource_id,
                     "pwd": pwd,
                     "providers": providers,
                     "resource_type": res_type,
@@ -169,6 +173,39 @@ class KungalCrawler(BaseCrawler):
                 },
             ))
         return out
+
+    # ---------- 真实下载地址 ----------
+    def resolve_share(self, res: Resource) -> Resource:
+        """调鲲的 downloads 接口拿真正的下载地址（content 里那个多半是工具分享）。
+
+        实测：POST {base}/api/v1/galgame-resources/{id}/downloads
+        → {"object":"galgame_resource_download",
+           "download_urls":["https://pan.baidu.com/s/1N7Zv8W...?pwd=rybj"],
+           "extraction_code":"rybj","archive_password":""}
+        不需要登录，但每点一次都可能被限频，所以只在真要尝试时才调。
+        """
+        resource_id = str((res.extra or {}).get("resource_id") or "")
+        if not resource_id:
+            if res.link:
+                return res
+            raise CrawlerError("kungal 资源缺少 id")
+        url = f"{self.base}/api/v1/galgame-resources/{resource_id}/downloads"
+        data = self.post_json(url, {}, headers={"Accept": "application/json"})
+        payload = data if isinstance(data, dict) else {}
+        urls = payload.get("download_urls") or []
+        if isinstance(urls, str):
+            urls = [urls]
+        baidu = [str(u) for u in urls if "baidu.com" in str(u)]
+        if not baidu:
+            raise CrawlerError(f"kungal 条目 {resource_id} 没有百度链接（{len(urls)} 个其它链接）")
+        res.link = baidu[0]
+        extra = dict(res.extra or {})
+        extra["pwd"] = payload.get("extraction_code") or extra.get("pwd") or ""
+        extra["archive_password"] = payload.get("archive_password") or ""
+        res.extra = extra
+        if not res.size_gb:
+            res.size_gb = parse_size_gb(str(payload.get("size") or ""))
+        return res
 
 
 def _collect_links(node: Any, depth: int = 0, context: str = "") -> list[str]:

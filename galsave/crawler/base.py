@@ -121,6 +121,29 @@ class BaseCrawler:
         except ValueError as exc:
             raise CrawlerError(f"{self.site} 返回的不是 JSON: {url}") from exc
 
+    def post_json(self, url: str, payload: Any = None, **kwargs: Any) -> Any:
+        """带节流和重试的 POST（有些接口要用 POST 才给真链接）。"""
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            self._throttle()
+            try:
+                resp = self.session.post(url, json=payload if payload is not None else {},
+                                         timeout=self.timeout, proxies=self.proxies, **kwargs)
+                if resp.status_code == 200:
+                    try:
+                        return resp.json()
+                    except ValueError as exc:
+                        raise CrawlerError(f"{self.site} 返回的不是 JSON: {url}") from exc
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    last_exc = CrawlerError(f"{self.site} HTTP {resp.status_code}: {url}")
+                    time.sleep(min(15, 2 * attempt))
+                    continue
+                raise CrawlerError(f"{self.site} HTTP {resp.status_code}: {url}")
+            except requests.RequestException as exc:
+                last_exc = CrawlerError(f"{self.site} 连接失败: {exc}")
+                time.sleep(min(15, 2 * attempt))
+        raise last_exc or CrawlerError(f"{self.site} 请求失败: {url}")
+
     # ---------- 子类实现 ----------
     def search(self, names: list[str], threshold: float | None = None) -> list[Resource]:
         """按一批候选名搜索，返回已过匹配阈值的资源（按分数、大小降序）。"""
