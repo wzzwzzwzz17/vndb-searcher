@@ -309,7 +309,8 @@ class CloudSaver:
         if payload != local:
             self._cleanup(payload)
         size_gb = measure(self.client, remote_path)
-        return SaveResult(True, route, site, cloud_path=remote_path,
+        # 记目录而不是文件：和转存路线保持同一个口径，reorg/体检都按目录走
+        return SaveResult(True, route, site, cloud_path=folder,
                           size_gb=size_gb or plain_gb, detail=f"本地下载 {plain_gb:.2f}GB 已加密上传")
 
     # ---------- 入库后体检 ----------
