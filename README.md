@@ -1,4 +1,4 @@
-﻿# VNDB搜索器
+# VNDB搜索器
 
 用自然语言描述你想找的 Galgame。程序把描述变成 VNDB 官方筛选条件，返回高分作品的名称、原名、评分、中文简介、标签和 VNDB 链接，并尽量补上鲲 Galgame、TouchGal 的评分。点开作品时，给出的是这几个站上的作品参考页入口，不是压缩包、直链或磁力链接。
 
@@ -160,7 +160,7 @@ python -m baidu_cloud.auth login
 - 网页进程里填写的 Key 和 TouchGal Token 会写进当前进程的配置，同一台机器上后一次请求会盖住前一次。
 - 安卓版的 API Key 放在应用私有存储里，是明文，没有额外加密。
 - 简介和标签翻译依赖 DeepSeek，可能漏译、缩短或措辞不稳。
-- 没有自动化测试覆盖三种模式的全部筛选组合。模式规则有过手工核对；`galsave`（收藏库流水线）那一套有 91 个单元测试。
+- 没有自动化测试覆盖三种模式的全部筛选组合。模式规则有过手工核对；`galsave`（收藏库流水线）那一套有 109 个单元测试。
 - 安卓打包脚本只在 Windows 上试过，而且依赖本机已安装的 SDK，不是 Gradle 工程。
 
 ## 可以怎么优化
@@ -190,17 +190,35 @@ VNDB 的 `olang` 字段是「官方原始语言」。`galsave/vndb.py` 在 VNDB 
 
 | 来源 | 站点 | 怎么进网盘 | 占不占本地网络 |
 | --- | --- | --- | --- |
-| `magnet` | GGBase（镜像 `ggb.dlgal.com`） | 解析出磁力链接；百度网盘现已不接受磁力离线（见下），所以只登记到「待处理磁力」清单 | 不占（不下载） |
 | `share` | 鲲 kungal | 抓分享链接，云端转存到自己网盘 | 不占（云端转存） |
 | `direct` | 真红 shinnku | 本地下载 → AES-GCM 加密 → 改名成 `.png` → 分片上传 | 占，按批配额 500 GB |
+| `magnet` | GGBase（镜像 `ggb.dlgal.com`） | 装了就交给本机 aria2 下载，再走「加密 → 改名 `.png` → 上传」；没装或下不动就登记到「待处理磁力」清单 | 占（本地 BT 下载） |
 
-`source_priority` 决定同一部作品优先试哪种来源。
+`source_priority: [share, direct, magnet]` 决定同一部作品优先试哪种来源：**先鲲转存，不行再真红直链，最后才是 GGBase 磁力**。一部作品只要有一条路成功，`done` 表里就记上了，后面的源不会再存一遍，所以不会重复。
+
+### 命名与目录结构
+
+云端只有一个根目录 `baidu.root_dir`（默认 `/gal_save`），每部作品一个目录，命名规则是 `folder_pattern`（默认 `v{id} {name}`）：
+
+```
+/gal_save/v19073 千恋＊万花
+/gal_save/v2016 装甲悪鬼村正
+/gal_save/v7771 WHITE ALBUM2
+```
+
+`{id}` 是 VNDB 编号，`{name}` 取 VNDB 的**日文原名**（`alttitle` 里有日文就用它，没有日文才退回英文 `title`），见 `galsave/vndb.py:Vn.preferred_name`。不再有 `_offline` / `_share` / `_encrypted` 那种按来源分的中间目录，失败时也不会留空目录（`_remove_if_empty()` 会把空目录删掉）。
+
+已有的旧结构可以用 `reorg` 整理：默认只打印计划，加 `--apply` 才真的在网盘里移动（只移动、不复制、不删内容）。
+
+### 磁力交给本机 aria2
+
+`baidu.magnet_local: true` 时，GGBase 的磁力优先交本机 `aria2c` 下载（`aria2_path` 留空就在 PATH 里找，也可以用 `winget install aria2.aria2` 安装），下完打成一个包再走「加密 → 改名 `.png` → 分片上传」。磁力下载同样算本地流量，所以也吃 `c_quota_per_batch_gb` 那 500 GB。本机没有 aria2 时自动退回「只登记到待处理磁力清单」。
 
 **关于磁力离线（实测结论）**：`POST /rest/2.0/services/cloud_dl?method=add_task` 对磁力（`type=4`）一律返回 `{"error_code":36001,"error_msg":"param error"}`，换磁力、换 `type`、换 `app_id`/`clienttype`、加 `select`/`dn` 都无效；同样参数换成 http 直链（`type=1`）立刻成功，说明不是凭据或会员的问题，而是**百度网盘已不再为个人账号提供 BT/磁力离线**（离线只剩 http/ftp）。SVIP 账号的会员权益里仍然写着「离线下载套餐」，但磁力任务进不去。
 
-所以 `galsave` 现在的做法是：GGBase 解析出来的磁力不再白调接口，而是写进数据库 `magnet_pending` 表（`vndb_id / title / magnet / size_gb / site`），一条作品成功从别的源入库时会自动清掉对应记录。用 `python -m galsave magnets` 导出这份清单，之后可以自己用本地 BT 客户端挂机下载，或者等哪天网盘又支持了再重试。
+所以 `galsave` 现在的做法是：GGBase 解析出来的磁力先记着，能本地下载就下载，下载不了（没装 aria2 / 磁力死种）才写进数据库 `magnet_pending` 表（`vndb_id / title / magnet / size_gb / site`），一条作品成功从别的源入库时会自动清掉对应记录。用 `python -m galsave magnets` 导出这份清单，之后可以自己用本地 BT 客户端挂机下载，或者等哪天网盘又支持了再重试。
 
-直链路线会占本地网络，所以按批计：`c_quota_per_batch_gb: 500`，用完就只用转存和磁力登记，直到你执行 `python -m galsave quota --reset` 开新的一批（清零的只是本批用量，已入库的账不变）。直链在下载前先发一次 `HEAD` 探体积，超出本批剩余额度就不下载——校园流量不该花在注定要删的文件上。
+直链和磁力都要下到本地，所以按批计：`c_quota_per_batch_gb: 500`，用完就只用转存，直到你执行 `python -m galsave quota --reset` 开新的一批（清零的只是本批用量，已入库的账不变）。直链在下载前先发一次 `HEAD` 探体积，超出本批剩余额度就不下载——校园流量不该花在注定要删的文件上。
 
 **关于转存（实测结论）**：现在的分享页是服务端渲染的一坨 JSON，`/share/list` 之类的老接口全部报错，能用的顺序是：`GET /s/<surl>` 拿到跳转后的权威 `surl`（注意原始链接带的那个前导 `1` 是分享 ID 的一部分，`/share/verify` 要用去掉 `1` 的那段）→ `POST /share/verify` 拿 `BDCLND` Cookie → 带 Cookie 再 `GET /share/init` 读 `file_list` → `POST /share/transfer`，其中 `sekey` 必须是 **URL 解码后**的 `BDCLND`，否则回 `errno 200025 提取码输入错误`。
 
@@ -243,6 +261,8 @@ python -m galsave run --buckets 8.0 7.5 --max-vns 20
 python -m galsave quota              # 只看 4TB / 500GB 配额
 python -m galsave quota --reset      # C 源 500GB 用完后换新的一批（配额清零，账不会丢）
 python -m galsave magnets --out magnets.txt   # 导出网盘收不了的磁力清单（自己用 BT 客户端处理）
+python -m galsave reorg              # 看现有网盘目录该怎么改成 v<编号> <日文名>
+python -m galsave reorg --apply      # 真的在网盘里改名/移动到规范结构
 python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载的加密文件
 ```
 
@@ -251,14 +271,15 @@ python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载
 ### 数据与测试
 
 - 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` / `magnet_pending` 五张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。
-- 测试：`python -m unittest discover -s tests -t .`（91 项，全部离线夹具，不联网）。
+- 测试：`python -m unittest discover -s tests -t .`（109 项，全部离线夹具，不联网）；`python -m galsave selftest` 是 18 项纯本地自检。
 
 ### 已知局限
 
-- 百度网盘已经不支持磁力离线（`add_task` 对 `type=4` 恒回 `36001 param error`），所以 GGBase 这条线目前只能产出「待处理磁力清单」，真正进网盘只能靠鲲转存或真红直链。
+- 百度网盘已经不支持磁力离线（`add_task` 对 `type=4` 恒回 `36001 param error`），磁力只能走本机 aria2 再上传，或者留在「待处理磁力清单」里；真正不占流量的还是只有鲲转存。
 - 鲲的资源多为「合集」类条目，默认 `allow_collection: false` 会跳过，所以有些作品在鲲上捞不到本体。
 - 鲲有些作品的候选条目里，真实分享已经被替换成「模拟器 + 解压工具」打包（转存前的体积筛选会挡掉），这类作品得等别家站点。
 - 真红只有直链，走本地下载，受 500 GB/批 配额限制；合集区的直链主机和 ZD CDN 不一样，两种都支持。
+- 磁力路线要求本机装了 aria2；没装时只能登记清单，这一点 `galsave status` 和日志里都会写出来。
 - GGBase 镜像的翻页参数无效（`p=0/1/2` 返回同一批），已按条目 ID 去重，但深层的早期资源搜不到。
 - 标题匹配用相似度（阈值 85），遇到「大戦国ランス / 戦国ランス」这种前缀只差一两个字的不同作品，靠规则压到阈值以下；极短的别名仍可能误命中，最终以 `dryrun` 的人工核对为准。
 

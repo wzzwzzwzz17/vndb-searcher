@@ -257,15 +257,22 @@ class BaiduClient:
         return [item for item in (data.get("list") or []) if isinstance(item, dict)]
 
     def exists(self, remote_path: str) -> bool:
+        return self.entry(remote_path) is not None
+
+    def entry(self, remote_path: str) -> dict | None:
+        """返回路径对应的列表项（含 isdir/size），不存在返回 None。"""
         parent = posix_parent(remote_path)
         name = posix_name(remote_path)
         try:
             items = self.list_dir(parent)
         except BaiduError as exc:
             if exc.errno == 31066:
-                return False
+                return None
             raise
-        return any(str(item.get("server_filename") or "") == name for item in items)
+        for item in items:
+            if str(item.get("server_filename") or "") == name:
+                return item
+        return None
 
     def mkdir(self, remote_dir: str) -> bool:
         """建目录（已存在返回 False，不报错）。
@@ -319,6 +326,22 @@ class BaiduClient:
             return resp.json().get("errno") in (0, "0", None)
         except ValueError:
             return False
+
+    def move(self, remote_path: str, dest_dir: str, new_name: str = "") -> bool:
+        """把文件/目录移到另一个目录下（可同时改名）。"""
+        params = {"opera": "move", "bdstoken": self.bdstoken, "channel": "chunlei",
+                  "web": "1", "app_id": APP_ID, "clienttype": "0"}
+        item = {"path": remote_path, "dest": dest_dir, "newname": new_name or posix_name(remote_path)}
+        body = {"filelist": json.dumps([item], ensure_ascii=False)}
+        resp = self._post(f"{PAN}/api/filemanager", params=params, data=body)
+        try:
+            data = resp.json()
+        except ValueError:
+            return False
+        if data.get("errno") in (0, "0", None):
+            return True
+        raise BaiduError(data.get("errno"), str(data.get("error_msg") or data.get("show_msg") or ""),
+                         f"移动 {remote_path}")
 
     # ---------- 递归统计 ----------
     def dir_size_bytes(self, remote_dir: str, max_depth: int = 4) -> int:

@@ -20,7 +20,7 @@ class ConfigTest(unittest.TestCase):
     def test_defaults(self) -> None:
         cfg = load_config()
         self.assertEqual(cget(cfg, "max_total_gb"), 4000.0)
-        self.assertEqual(cget(cfg, "source_priority"), ["magnet", "share", "direct"])
+        self.assertEqual(cget(cfg, "source_priority"), ["share", "direct", "magnet"])
         self.assertGreaterEqual(cget(cfg, "fuzzy_match_threshold"), 0.0)
 
     def test_yaml_override_and_bucket_order(self) -> None:

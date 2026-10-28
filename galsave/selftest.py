@@ -104,6 +104,38 @@ def run_selftest() -> int:
 
     checks.append(("AES-GCM 加密往返 + 错密码拒绝", crypto_roundtrip))
 
+    # 网盘目录命名：一部作品一个目录，带 vndb 编号 + 日文原名
+    def folder_naming() -> bool:
+        from .cloud import CloudSaver
+        from .config import load_config
+
+        class _DB:
+            def c_quota_used_gb(self) -> float:
+                return 0.0
+
+        saver = CloudSaver(load_config(), _DB())
+        if saver.folder_for("v19073", "千恋＊万花") != "/gal_save/v19073 千恋＊万花":
+            return False
+        # 编号已经带 v 时不要再叠一个
+        return saver.folder_for("19073", "x") == "/gal_save/v19073 x"
+
+    checks.append(("网盘目录命名 v<编号> <日文名>", folder_naming))
+
+    # VNDB 名字优先级：有日文原名就用日文，没有才退回英文标题
+    def preferred_name() -> bool:
+        from .vndb import _has_japanese, _to_vn
+
+        vn = _to_vn({"id": "v1", "title": "Rance X -Kessen-", "alttitle": "ランス10－決戦－",
+                     "olang": "ja", "rating": 90.6, "aliases": ["R10"]})
+        if vn.preferred_name != "ランス10－決戦－":
+            return False
+        en = _to_vn({"id": "v2", "title": "Only English", "alttitle": "", "olang": "ja"})
+        if en.preferred_name != "Only English":
+            return False
+        return _has_japanese("千恋＊万花") and not _has_japanese("Only English")
+
+    checks.append(("VNDB 名字优先取日文原名", preferred_name))
+
     results = [_check(name, fn) for name, fn in checks]
 
     failures = 0

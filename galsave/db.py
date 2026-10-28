@@ -161,6 +161,10 @@ class TaskDB:
         rows = self._query("SELECT * FROM done ORDER BY finish_ts DESC LIMIT ?", (int(limit),))
         return [dict(row) for row in rows]
 
+    def all_done(self) -> list[dict[str, Any]]:
+        """全部入库记录（整理云端目录结构时用）。"""
+        return [dict(row) for row in self._query("SELECT * FROM done ORDER BY finish_ts")]
+
     # ---------- retry ----------
     def add_retry(
         self,

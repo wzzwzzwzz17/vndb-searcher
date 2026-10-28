@@ -8,10 +8,11 @@ rating_buckets: [8.0, 7.5, 7.0, 6.5, 6.0]
 # 累计入库总容量上限（GB）。1TB = 1000GB，4000GB = 4TB
 max_total_gb: 4000
 
-# 单部作品的取源顺序：磁力离线 > 网盘转存 > 直链下载加密上传
-source_priority: [magnet, share, direct]
+# 单部作品的取源顺序：鲲转存（不占本地流量）> 真红直链 > ggbase 磁力
+# 一部作品只要有一个源成功入库，就不会再用别的源重复保存
+source_priority: [share, direct, magnet]
 
-# 校园网批次流量配额，只统计 C 源（直链下载）的流量
+# 本地下载流量配额（直链 + 磁力都要下到本地），每批 500GB
 c_quota_per_batch_gb: 500
 
 # 触达总容量上限后是否停止发起新任务（正在跑的任务是否强杀由下一项决定）
@@ -56,17 +57,24 @@ crawler:
   allow_collection: false
 
 baidu:
-  # 本程序托管的网盘根目录（只统计这里的资源，不看网盘总空间）
+  # 本程序托管的网盘根目录：所有作品都直接放在这里，一部件一个子目录
   root_dir: /gal_save
-  offline_dir: /gal_save/_offline
-  share_dir: /gal_save/_share
-  encrypted_dir: /gal_save/_encrypted
+  # 子目录命名：v<vndb编号> <日文原名>（没有日文名才用英文标题）
+  folder_pattern: "v{id} {name}"
   # 分片上传大小（MB），百度网盘网页版用 4MB
   upload_chunk_mb: 4
   app_id: "250528"
   # 转存/离线连续操作之间的间隔（秒），避免被风控
   interval: 1.5
-  # 是否尝试磁力离线下载（需要 SVIP；非会员会自动落到 share/direct）
+  # 百度网盘已不接受磁力离线（实测 36001），磁力改用本机 aria2 下载再加密上传
+  magnet_local: true
+  # aria2c 可执行文件路径，留空则自动在 PATH 里找
+  aria2_path: ""
+  aria2_args: []
+  aria2_seed_time: 0
+  # 单个磁力最多下多久（秒），默认 6 小时
+  aria2_timeout_seconds: 21600
+  # 是否还尝试网盘离线下载（现在只对 http/ftp 直链有效）
   offline_enabled: true
   # 离线任务最长等多久（小时），以及轮询间隔（秒）
   offline_wait_hours: 6

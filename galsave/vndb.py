@@ -49,8 +49,32 @@ class Vn:
         return out
 
     @property
+    def preferred_name(self) -> str:
+        """入库命名用：优先 VNDB 上的日文原名，没有日文名才退回英文标题。
+
+        VNDB 的 `title` 通常是罗马字/英文，`alttitle` 才是原始语言的标题；
+        官方语言是日语的作品，`alttitle` 就是日文名。
+        """
+        alt = (self.alttitle or "").strip()
+        title = (self.title or "").strip()
+        if alt and _has_japanese(alt):
+            return alt
+        if self.olang == "ja" and alt:
+            return alt
+        return title or alt or self.id
+
+    @property
     def url(self) -> str:
         return f"https://vndb.org/{self.id}"
+
+
+def _has_japanese(text: str) -> bool:
+    """有没有假名或汉字（罗马字标题基本不含）。"""
+    for ch in str(text or ""):
+        code = ord(ch)
+        if 0x3040 <= code <= 0x30FF or 0x4E00 <= code <= 0x9FFF or 0x3400 <= code <= 0x4DBF:
+            return True
+    return False
 
 
 def _to_vn(item: dict[str, Any]) -> Vn:

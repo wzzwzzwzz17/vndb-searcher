@@ -61,7 +61,7 @@ class FakeSaver(CloudSaver):
     def cleanup_tmp(self) -> int:
         return 0
 
-    def save(self, res: Resource) -> SaveResult:  # type: ignore[override]
+    def save(self, res: Resource, vndb_id: str = "", name: str = "") -> SaveResult:  # type: ignore[override]
         self.saved.append(res)
         if self._results:
             return self._results.pop(0)
@@ -97,7 +97,7 @@ class SchedulerDecisionTest(unittest.TestCase):
 
     def test_success_marks_done(self) -> None:
         saver = FakeSaver([SaveResult(ok=True, route=SOURCE_MAGNET, site="ggbase",
-                                      cloud_path="/gal_save/_offline/ランス10", size_gb=3.77)])
+                                      cloud_path="/gal_save/v20802 ランス10－決戦－", size_gb=3.77)])
         self._install([make_vn()], [make_resource()], saver)
         summary = self.sched.run(skip_retries=True)
         self.assertEqual(summary["success"], 1)
@@ -106,7 +106,8 @@ class SchedulerDecisionTest(unittest.TestCase):
         self.assertAlmostEqual(self.db.total_gb(), 3.77, places=2)
         row = self.db.get_done("v20802")
         self.assertEqual(row["source_type"], SOURCE_MAGNET)
-        self.assertEqual(row["title"], "Rance X -Kessen-")
+        # 入库记录用 VNDB 的日文原名（用户要求按日文名命名）
+        self.assertEqual(row["title"], "ランス10－決戦－")
 
     def test_already_done_is_skipped(self) -> None:
         self.db.mark_done("v20802", 9.06, "Rance X -Kessen-", SOURCE_MAGNET, "ggbase", "magnet:?x", "/p", 3.77)
@@ -170,9 +171,9 @@ class SchedulerDecisionTest(unittest.TestCase):
         self.sched.offline_ok = False
         self.sched.c_ok = False
         # 磁力始终保留（只登记待处理），直链靠本地配额，配额没断时也能用
-        self.assertEqual(self.sched._allow_types(), [SOURCE_MAGNET, SOURCE_SHARE])
+        self.assertEqual(self.sched._allow_types(), [SOURCE_SHARE, SOURCE_MAGNET])
         self.sched.c_ok = True
-        self.assertEqual(self.sched._allow_types(), [SOURCE_MAGNET, SOURCE_SHARE, SOURCE_DIRECT])
+        self.assertEqual(self.sched._allow_types(), [SOURCE_SHARE, SOURCE_DIRECT, SOURCE_MAGNET])
 
     def test_allow_types_skips_direct_when_quota_used(self) -> None:
         self.sched.saver = FakeSaver([], quota_gb=0.0)

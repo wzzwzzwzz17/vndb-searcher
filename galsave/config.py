@@ -20,7 +20,8 @@ class ConfigError(RuntimeError):
 DEFAULTS: dict[str, Any] = {
     "rating_buckets": [8.0, 7.5, 7.0, 6.5, 6.0],
     "max_total_gb": 4000.0,
-    "source_priority": ["magnet", "share", "direct"],
+    # 优先鲲（云端转存，不占本地流量），其次真红直链，最后才用磁力（要本机 BT 下载）
+    "source_priority": ["share", "direct", "magnet"],
     "c_quota_per_batch_gb": 500.0,
     "stop_on_reach_limit": True,
     "kill_running_task_on_stop": False,
@@ -48,12 +49,17 @@ DEFAULTS: dict[str, Any] = {
     },
     "baidu": {
         "root_dir": "/gal_save",
-        "offline_dir": "/gal_save/_offline",
-        "share_dir": "/gal_save/_share",
-        "encrypted_dir": "/gal_save/_encrypted",
+        # 所有作品都放在 root_dir 下，一部件一个目录，名字统一带 VNDB 编号
+        "folder_pattern": "v{id} {name}",
         "upload_chunk_mb": 4,
         "app_id": "250528",
         "interval": 1.5,
+        # 磁力：百度已不收离线，默认用本机 aria2 下载再加密上传
+        "magnet_local": True,
+        "aria2_path": "",
+        "aria2_args": [],
+        "aria2_seed_time": 0,
+        "aria2_timeout_seconds": 21600,
         "offline_enabled": True,
         "offline_wait_hours": 6.0,
         "poll_seconds": 20.0,

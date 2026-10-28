@@ -100,8 +100,42 @@ class FakeClient:
 
     app_id = "250528"
 
+    def __init__(self) -> None:
+        self.dirs: list[str] = []
+        self.deleted: list[list[str]] = []
+
     def require_login(self) -> "FakeClient":
         return self
+
+    def ensure_dir(self, remote_dir: str) -> str:
+        self.dirs.append(remote_dir)
+        return remote_dir
+
+    def list_dir(self, remote_dir: str, page: int = 1, num: int = 1000) -> list[dict]:
+        return [{"server_filename": "x.png"}]
+
+    def delete(self, paths) -> bool:
+        self.deleted.append(list(paths))
+        return True
+
+
+class FakeAria2:
+    """假 aria2：直接吐出一个本地文件，记录调用。"""
+
+    def __init__(self, root: Path, size_bytes: int = 3_000_000_000):
+        self.root = root
+        self.size_bytes = size_bytes
+        self.calls: list[str] = []
+
+    def available(self) -> tuple[bool, str]:
+        return True, "aria2 version 1.37.0"
+
+    def download(self, magnet: str, name: str, progress=None) -> Path:
+        self.calls.append(magnet)
+        target = self.root / "aria2" / f"{name}.iso"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"\0" * self.size_bytes)
+        return target
 
 
 class CloudSaverRouteTest(unittest.TestCase):
@@ -115,6 +149,8 @@ class CloudSaverRouteTest(unittest.TestCase):
         # 直接塞假客户端：这些用例不该碰本机 credentials.json，也不该联网
         self.saver._client = FakeClient()
         self.saver._downloader = FakeDownloader(self.root)
+        # 本机有没有装 aria2 不该影响这些用例：默认走网盘离线分支
+        self.saver.magnet_local = False
         FakeOffline.instances.clear()
         FakeUploader.uploaded.clear()
 
@@ -152,7 +188,40 @@ class CloudSaverRouteTest(unittest.TestCase):
         result = self.saver.save_share("https://pan.baidu.com/s/1abc?pwd=t7cp", "ランス10", "kungal")
         self.assertTrue(result.ok)
         self.assertEqual(result.route, SOURCE_SHARE)
-        self.assertIn("_share", result.cloud_path)
+        self.assertIn("ランス10", result.cloud_path)
+
+    def test_folder_uses_vndb_id_and_preferred_name(self) -> None:
+        # 用户要求：一部作品一个目录，名字带 vndb 编号 + 日文原名
+        folder = self.saver.folder_for("v19073", "千恋＊万花")
+        self.assertEqual(folder, "/gal_save/v19073 千恋＊万花")
+
+    def test_folder_avoids_double_v_prefix(self) -> None:
+        self.assertEqual(self.saver.folder_for("19073", "x"), "/gal_save/v19073 x")
+
+    def test_folder_sanitizes_illegal_chars(self) -> None:
+        folder = self.saver.folder_for("v1", 'a/b:c*d?"e"')
+        self.assertNotIn("/", folder.rsplit("/", 1)[-1])
+        self.assertTrue(folder.startswith("/gal_save/"))
+
+    def test_save_dispatches_with_requested_name(self) -> None:
+        res = Resource(site="ggbase", source_type=SOURCE_MAGNET, title="Rance X",
+                       link="magnet:?xt=urn:btih:abc", size_gb=4.0, detail_url="", match_score=95)
+        result = self.saver.save(res, vndb_id="v20802", name="ランス10－決戦－")
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("v20802 ランス10－決戦－", result.cloud_path)
+
+    def test_magnet_local_uses_aria2_then_uploads(self) -> None:
+        self.saver.magnet_local = True
+        fake = FakeAria2(self.root)
+        self.saver._aria2 = fake
+        result = self.saver.save_magnet("magnet:?xt=urn:btih:abc", "/gal_save/v1 x", "x")
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(fake.calls, ["magnet:?xt=urn:btih:abc"])
+        self.assertGreater(self.db.c_quota_used_gb(), 0)  # 本机下载要占批次配额
+        self.assertEqual(len(FakeUploader.uploaded), 1)
+        self.assertEqual(Path(FakeUploader.uploaded[0][0]).suffix, ".png")
+        # aria2 的临时目录要清掉，别留垃圾
+        self.assertFalse((self.root / "aria2").exists())
 
     def test_direct_downloads_encrypts_and_uploads(self) -> None:
         result = self.saver.save_direct("https://zd.shinnku.top/file/a.rar", "戦国ランス")

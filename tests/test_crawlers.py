@@ -283,14 +283,16 @@ class FakeCrawler:
 
 class SearchEngineTest(unittest.TestCase):
     def test_priority_sorting(self) -> None:
+        # 用户要求的取源顺序：鲲转存 > 真红直链 > ggbase 磁力
         engine = SearchEngine(load_config())
         engine.crawlers = [
-            FakeCrawler([Resource("fake", SOURCE_DIRECT, "c", "https://x/1", 1.0, match_score=99)]),
             FakeCrawler([Resource("fake", SOURCE_MAGNET, "a", "magnet:?xt=1", 2.0, match_score=90)]),
+            FakeCrawler([Resource("fake", SOURCE_DIRECT, "c", "https://x/1", 1.0, match_score=99)]),
             FakeCrawler([Resource("fake", SOURCE_MAGNET, "b", "magnet:?xt=2", 5.0, match_score=95)]),
+            FakeCrawler([Resource("fake", SOURCE_SHARE, "s", "https://pan.baidu.com/s/1abc", 9.0, match_score=80)]),
         ]
         found = engine.find(["x"])
-        self.assertEqual([r.title for r in found], ["b", "a", "c"])
+        self.assertEqual([r.title for r in found], ["s", "c", "b", "a"])
 
     def test_allow_types_filters(self) -> None:
         engine = SearchEngine(load_config())

@@ -212,7 +212,7 @@ class Scheduler:
     def _handle(self, vn: Vn) -> bool:
         names = vn.names
         self.db.mark_seen(vn.id, vn.display_rating, vn.title)
-        self.log.info("▶ %s 《%s》 评分 %s", vn.id, vn.title, vn.display_rating)
+        self.log.info("▶ %s 《%s》 评分 %s", vn.id, vn.preferred_name, vn.display_rating)
 
         allow = self._allow_types()
         if not allow:
@@ -256,12 +256,12 @@ class Scheduler:
                 # 已知网盘不收磁力离线：不再白发请求，直接登记待处理
                 self._record_pending_magnet(vn, res)
                 continue
-            result = self.saver.save(res)
+            result = self.saver.save(res, vndb_id=vn.id, name=vn.preferred_name)
             if result.ok:
                 self.db.mark_done(
                     vndb_id=vn.id,
                     rating=vn.display_rating,
-                    title=vn.title,
+                    title=vn.preferred_name,
                     source_type=result.route,
                     site=result.site or res.site,
                     resource_link=(res.link or "")[:500],
@@ -292,7 +292,7 @@ class Scheduler:
     def _record_pending_magnet(self, vn: Vn, res: Any, note: str = "") -> None:
         self.db.add_pending_magnet(
             vndb_id=vn.id,
-            title=vn.title,
+            title=vn.preferred_name,
             magnet=res.link or "",
             size_gb=float(res.size_gb or 0),
             site=res.site,
@@ -306,7 +306,7 @@ class Scheduler:
         磁力永远保留：即便网盘不收磁力离线（实测 36001），也仍然把磁力登记到
         magnet_pending，方便之后用本地 BT 客户端或其它方式处理。
         """
-        priority = list(self.cfg.get("source_priority") or ["magnet", "share", "direct"])
+        priority = list(self.cfg.get("source_priority") or ["share", "direct", "magnet"])
         allow = []
         for source in priority:
             if source == SOURCE_DIRECT and (not self.c_ok or self.saver.c_remaining_gb() <= 0):

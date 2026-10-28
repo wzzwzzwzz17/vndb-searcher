@@ -7,6 +7,8 @@
     python -m galsave dryrun X   # 只搜索不下载，看某部作品能找到什么
     python -m galsave run        # 正式跑：分级 → 搜索 → 落地 → 入库
     python -m galsave quota      # 查网盘容量
+    python -m galsave magnets    # 导出没能自动入库的磁力
+    python -m galsave reorg      # 把旧目录结构整理成 v<编号> <日文名>
     python -m galsave decrypt F  # 把 C 路线加密文件还原到本地
     python -m galsave selftest   # 纯本地自检，不联网
 """
@@ -127,11 +129,16 @@ def cmd_dryrun(args: argparse.Namespace) -> int:
         return 1
 
     engine = SearchEngine(cfg)
+    saver = None
     for vn in vns:
-        print(f"\n{vn.id}  {vn.title}  ({vn.display_rating})  olang={vn.olang}")
+        print(f"\n{vn.id}  {vn.preferred_name}  ({vn.display_rating})  olang={vn.olang}")
         print(f"  别名: {', '.join(vn.names[1:4])}")
         if vn.olang and vn.olang != "ja":
             print("  ⚠ 官方原始语言不是日语，正式跑会被跳过")
+        from .cloud import CloudSaver
+
+        saver = saver or CloudSaver(cfg, TaskDB(cpath(cfg, "paths.db")))
+        print(f"  入库目录: {saver.folder_for(vn.id, vn.preferred_name)}")
         found = engine.find(vn.names)
         if not found:
             print("  三站都没有匹配资源")
@@ -217,6 +224,40 @@ def cmd_magnets(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reorg(args: argparse.Namespace) -> int:
+    """把已有入库记录整理成 /gal_save/v<编号> <日文名> 的统一结构。"""
+    cfg = _bootstrap(args)
+    from baidu_cloud import BaiduClient
+
+    from .cloud import CloudSaver
+    from .reorg import apply_reorg, plan_reorg
+
+    db = TaskDB(cpath(cfg, "paths.db"))
+    client = BaiduClient()
+    if not client.check_login():
+        print("百度网盘登录信息无效或过期，请执行: python -m galsave login")
+        return 1
+    saver = CloudSaver(cfg, db, client=client)
+    from .vndb import VndbClient
+
+    items = plan_reorg(saver, db, client, vndb=VndbClient(cfg))
+    if not items:
+        print("没有入库记录，无需整理。")
+        return 0
+    for item in items:
+        print(item)
+    todo = [i for i in items if i.kind != "skip"]
+    if not todo:
+        print("\n目录结构已经全部合规。")
+        return 0
+    if not args.apply:
+        print(f"\n共 {len(todo)} 条待整理。确认无误后加 --apply 真动云端。")
+        return 0
+    done = apply_reorg(saver, db, client, todo)
+    print(f"\n已整理 {done}/{len(todo)} 条。")
+    return 0 if done == len(todo) else 1
+
+
 def cmd_decrypt(args: argparse.Namespace) -> int:
     cfg = _bootstrap(args)
     from .crypto.enc import CryptoError, decrypt_file
@@ -283,6 +324,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_mag.add_argument("--out", help="写到文件（每行一条）")
     p_mag.add_argument("--limit", type=int, default=0, help="只导出最近 N 条")
     p_mag.set_defaults(func=cmd_magnets)
+
+    p_reorg = sub.add_parser("reorg", help="整理已入库条目的云端目录（v<编号> <日文名>）")
+    p_reorg.add_argument("--apply", action="store_true", help="真的移动/改名（默认只看计划）")
+    p_reorg.set_defaults(func=cmd_reorg)
 
     p_dec = sub.add_parser("decrypt", help="还原 C 路线加密文件")
     p_dec.add_argument("file")
