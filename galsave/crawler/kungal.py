@@ -131,6 +131,11 @@ class KungalCrawler(BaseCrawler):
                 # 合集动辄上百 GB，默认跳过；标题常为空，日志里用 id 兜底
                 self.log.debug("kungal 跳过合集: %s", item.get("title") or item.get("id"))
                 continue
+            state = str(item.get("state") or "").lower()
+            if state and state != "valid":
+                # 站点自己会标 expired（分享失效），没必要再浪费一次解析
+                self.log.debug("kungal 跳过失效资源: %s (%s)", item.get("id"), state)
+                continue
             title = str(item.get("title") or work.get("display_name") or "")
             if any(word in title for word in _TOOL_WORDS):
                 continue
@@ -166,28 +171,38 @@ class KungalCrawler(BaseCrawler):
         return out
 
 
-def _collect_links(node: Any, depth: int = 0) -> list[str]:
-    """递归挖 content 文档树里的百度链接。"""
+def _collect_links(node: Any, depth: int = 0, context: str = "") -> list[str]:
+    """递归挖 content 文档树里的百度链接。
+
+    链接会带上「所在段落」的文本当上下文：鲲的很多条目在正文里写
+    「模拟器及解压工具：<链接>」，那个链接不是游戏本体，得靠上下文排除。
+    """
     if depth > 12:
         return []
     found: list[str] = []
     if isinstance(node, dict):
-        kind = str(node.get("type") or "")
+        kind = str(node.get("type") or "") or str(node.get("object") or "")
+        if kind in {"paragraph", "heading", "blockquote", "list_item", "list"}:
+            context = _node_text(node)
         if kind == "link":
             for key in ("url", "href", "link", "text"):
                 value = node.get(key)
-                if isinstance(value, str):
+                if isinstance(value, str) and not _is_tool_context(context + " " + value):
                     found.extend(_BAIDU.findall(value))
         for key, value in node.items():
             if key in {"text", "url", "href", "link"} and isinstance(value, str):
-                found.extend(_BAIDU.findall(value))
+                for link in _BAIDU.findall(value):
+                    if not _is_tool_context(context):
+                        found.append(link)
             elif isinstance(value, (dict, list)):
-                found.extend(_collect_links(value, depth + 1))
+                found.extend(_collect_links(value, depth + 1, context))
     elif isinstance(node, list):
         for item in node:
-            found.extend(_collect_links(item, depth + 1))
+            found.extend(_collect_links(item, depth + 1, context))
     elif isinstance(node, str):
-        found.extend(_BAIDU.findall(node))
+        for link in _BAIDU.findall(node):
+            if not _is_tool_context(context):
+                found.append(link)
     # 去重保序
     out: list[str] = []
     for link in found:
@@ -195,3 +210,26 @@ def _collect_links(node: Any, depth: int = 0) -> list[str]:
         if link not in out:
             out.append(link)
     return out
+
+
+def _node_text(node: Any, depth: int = 0) -> str:
+    """把一个段落/块里的所有文本拼起来（最多 400 字）。"""
+    if depth > 8:
+        return ""
+    parts: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in {"value", "text"} and isinstance(value, str):
+                parts.append(value)
+            elif isinstance(value, (dict, list)):
+                parts.append(_node_text(value, depth + 1))
+    elif isinstance(node, list):
+        for item in node:
+            parts.append(_node_text(item, depth + 1))
+    elif isinstance(node, str):
+        parts.append(node)
+    return " ".join(p for p in parts if p)[:400]
+
+
+def _is_tool_context(text: str) -> bool:
+    return any(word in text.lower() for word in _TOOL_WORDS)

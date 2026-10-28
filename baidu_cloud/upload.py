@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """分片上传（C 路线的最后一跳）：本地加密后的文件传到百度网盘。
 
-Web 端上传三步：
-1. POST /api/precreate  预上传，带每片 MD5 列表；return_type=1 表示秒传成功；
+Web 端上传三步（2026-10 实测）：
+1. POST /api/precreate  预上传，带每片 MD5 列表。
+   关键：必须带 `autoinit=1`，否则不返回 uploadid（只有 return_type=1 的秒传标记）；
+   return_type=1 表示网盘已有这些分片，可以跳过第 2 步直接合并；
 2. POST d.pcs.baidu.com/rest/2.0/pcs/superfile2?method=upload&type=tmpfile&partseq=N
    逐片上传（multipart 字段名 file）；
-3. POST /api/create?a=commit  合并分片。
+3. POST /api/create?a=commit  合并分片，body 里的 block_list 要用真实的分片 MD5
+   （不能填空串，否则 errno -7「该文件所在的文件夹命名不符合要求」这种误导性报错）。
 """
 
 from __future__ import annotations
@@ -56,12 +59,11 @@ class Uploader:
         chunks = max(1, (size + self.chunk_size - 1) // self.chunk_size)
         block_list = chunk_md5s(path, self.chunk_size) if chunks <= MAX_CHUNKS_WITH_HASH else []
         upload_id, rapid = self._precreate(remote_path, size, block_list)
-        if rapid:
-            self.log.info("秒传成功: %s", remote_path)
-            return remote_path
-
-        self._upload_chunks(path, remote_path, upload_id, chunks, progress)
-        self._create(remote_path, size, upload_id, chunks)
+        if upload_id:
+            self._upload_chunks(path, remote_path, upload_id, chunks, progress)
+        elif not rapid:
+            raise BaiduError(-1, "预上传没返回 uploadid，也不同意秒传", "百度上传")
+        self._create(remote_path, size, upload_id, chunks, block_list)
         return remote_path
 
     # ---------- 三步 ----------
@@ -72,6 +74,7 @@ class Uploader:
             "isdir": "0",
             "rtype": "3",
             "block_list": _dump(block_list),
+            "autoinit": "1",
             **self.client.common_params(),
         }
         resp = self.client._post(f"{PAN}/api/precreate", params=params, data={"target_path": remote_path})
@@ -83,8 +86,6 @@ class Uploader:
         if errno not in (0, "0", None):
             raise BaiduError(errno, str(data.get("show_msg") or ""), "百度上传")
         upload_id = str(data.get("uploadid") or "")
-        if not upload_id:
-            raise BaiduError(-1, "预上传没返回 uploadid", "百度上传")
         return upload_id, int(data.get("return_type") or 0) == 1
 
     def _upload_chunks(self, path: Path, remote_path: str, upload_id: str, chunks: int,
@@ -129,7 +130,8 @@ class Uploader:
                     # 有些账号返回里没有 md5，不影响后续合并
                     pass
 
-    def _create(self, remote_path: str, size: int, upload_id: str, chunks: int) -> None:
+    def _create(self, remote_path: str, size: int, upload_id: str, chunks: int,
+                block_list: list[str]) -> None:
         params = {"a": "commit", **self.client.common_params()}
         body = {
             "path": remote_path,
@@ -137,7 +139,7 @@ class Uploader:
             "isdir": "0",
             "rtype": "3",
             "uploadid": upload_id,
-            "block_list": _dump([""] * chunks),
+            "block_list": _dump(block_list or [""] * chunks),
         }
         resp = self.client._post(f"{PAN}/api/create", params=params, data=body)
         try:

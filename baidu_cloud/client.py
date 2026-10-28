@@ -386,7 +386,9 @@ def posix_parent(path: str) -> str:
 
 
 def posix_name(path: str) -> str:
-    return str(path or "").strip("/").rsplit("/", 1)[-1]
+    # 本地路径可能带反斜杠（Windows），先统一成正斜杠再取文件名，
+    # 否则会把整个 "C:\dir\file.rar" 当成文件名传到网盘（百度会回 errno -7）
+    return str(path or "").replace("\\", "/").strip("/").rsplit("/", 1)[-1]
 
 
 def join_posix(base: str, *parts: str) -> str:

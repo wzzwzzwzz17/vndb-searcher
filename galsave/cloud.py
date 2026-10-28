@@ -126,11 +126,25 @@ class CloudSaver:
     def save_share(self, link: str, title: str, site: str = "kungal") -> SaveResult:
         try:
             transfer = ShareTransfer(self.client)
-            result = transfer.transfer_into(link, self.share_dir, title)
+            info = transfer.parse(link)
+            # 鲲的正文里常混「模拟器及解压工具」的分享链接，先按真实体积筛一遍再转存
+            plain_gb = round(sum(int(f.get("size") or 0) for f in (info.get("files") or [])) / (1000 ** 3), 3)
+            if plain_gb and plain_gb < self.min_gb:
+                return SaveResult(False, "share", site,
+                                  error=f"分享里只有 {plain_gb:.2f}GB，不是游戏本体（可能是模拟器/工具）",
+                                  detail=link[:200])
+            if plain_gb and plain_gb > self.max_gb:
+                return SaveResult(False, "share", site,
+                                  error=f"分享体积 {plain_gb:.2f}GB 超出单部上限 {self.max_gb:.0f}GB",
+                                  detail=link[:200])
+            result = transfer.transfer_into(link, self.share_dir, title, info=info)
         except BaiduError as exc:
             return SaveResult(False, "share", site, error=str(exc))
         cloud_path = str(result.get("cloud_path") or "")
         size_gb = measure(self.client, cloud_path)
+        if size_gb <= 0:
+            # 列表接口偶尔有延迟：退回用分享页里各文件的 size 求和
+            size_gb = round(int(result.get("size_bytes") or 0) / (1000 ** 3), 3)
         if size_gb <= 0:
             return SaveResult(False, "share", site, cloud_path=cloud_path, error="转存成功但量不到体积")
         return SaveResult(True, "share", site, cloud_path=cloud_path, size_gb=size_gb,

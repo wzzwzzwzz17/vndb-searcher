@@ -67,11 +67,18 @@ class FakeOffline:
 
 
 class FakeTransfer:
-    def __init__(self, client):
+    def __init__(self, client, size_bytes: int = 7_460_000_000):
         self.client = client
+        self.size_bytes = size_bytes
 
-    def transfer_into(self, link: str, root_dir: str, title: str) -> dict:
-        return {"cloud_path": f"{root_dir}/{title}", "files": ["a.rar"]}
+    def parse(self, link: str) -> dict:
+        return {"shareid": "1", "share_uk": "2", "files": [
+            {"fs_id": 1, "server_filename": "a.rar", "isdir": 0, "size": self.size_bytes},
+        ]}
+
+    def transfer_into(self, link: str, root_dir: str, title: str, info: dict | None = None) -> dict:
+        return {"cloud_path": f"{root_dir}/{title}", "files": ["a.rar"],
+                "size_bytes": self.size_bytes}
 
 
 class FakeUploader:

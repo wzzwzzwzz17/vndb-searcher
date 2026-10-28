@@ -166,6 +166,28 @@ class KungalTest(unittest.TestCase):
         self.assertIn("pwd=t7cp", links[0])
         self.assertEqual(links[1], "https://pan.baidu.com/s/1abcdef")  # 去掉尾部标点
 
+    def test_collect_links_skips_tool_links(self) -> None:
+        # 鲲的正文里「模拟器及解压工具：<链接>」那个链接不是游戏本体
+        content = {
+            "object": "document",
+            "children": [
+                {"object": "blockquote", "children": [
+                    {"object": "paragraph", "children": [
+                        {"object": "text", "value": "  模拟器及解压工具："},
+                        {"object": "link", "url": "https://pan.baidu.com/s/1Dau8DVO5_HcMjOD4nFA4Qg?pwd=t7cp",
+                         "children": [{"object": "text", "value": "https://pan.baidu.com/s/1Dau8DVO5_HcMjOD4nFA4Qg?pwd=t7cp"}]},
+                    ]},
+                ]},
+                {"object": "paragraph", "children": [
+                    {"object": "text", "value": "游戏本体 "},
+                    {"object": "link", "url": "https://pan.baidu.com/s/1gameFILE?pwd=abcd",
+                     "children": [{"object": "text", "value": "https://pan.baidu.com/s/1gameFILE?pwd=abcd"}]},
+                ]},
+            ],
+        }
+        links = _collect_links(content)
+        self.assertEqual(links, ["https://pan.baidu.com/s/1gameFILE?pwd=abcd"])
+
     def test_resources_filtering(self) -> None:
         items = [
             {"id": 1, "resource_type": "game", "title": "ランス10 汉化版", "size": "11.11 GB",
@@ -182,6 +204,9 @@ class KungalTest(unittest.TestCase):
              "content": {"type": "link", "url": "https://pan.baidu.com/s/1quark"}},
             {"id": 5, "resource_type": "game", "title": "没链接", "size": "3.0 GB",
              "provider_names": ["百度网盘"], "content": {"type": "doc"}},
+            {"id": 6, "resource_type": "game", "title": "已失效", "size": "4.0 GB", "state": "expired",
+             "provider_names": ["百度网盘"],
+             "content": {"type": "link", "url": "https://pan.baidu.com/s/1gone"}},
         ]
         found = self.crawler._resources_from_items(items, self.work, 95.0, ["ランス10"])
         self.assertEqual(len(found), 1)

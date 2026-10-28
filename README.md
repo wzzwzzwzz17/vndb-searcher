@@ -202,6 +202,12 @@ VNDB 的 `olang` 字段是「官方原始语言」。`galsave/vndb.py` 在 VNDB 
 
 直链路线会占本地网络，所以按批计：`c_quota_per_batch_gb: 500`，用完就只用转存和磁力登记，直到你执行 `python -m galsave quota --reset` 开新的一批（清零的只是本批用量，已入库的账不变）。直链在下载前先发一次 `HEAD` 探体积，超出本批剩余额度就不下载——校园流量不该花在注定要删的文件上。
 
+**关于转存（实测结论）**：现在的分享页是服务端渲染的一坨 JSON，`/share/list` 之类的老接口全部报错，能用的顺序是：`GET /s/<surl>` 拿到跳转后的权威 `surl`（注意原始链接带的那个前导 `1` 是分享 ID 的一部分，`/share/verify` 要用去掉 `1` 的那段）→ `POST /share/verify` 拿 `BDCLND` Cookie → 带 Cookie 再 `GET /share/init` 读 `file_list` → `POST /share/transfer`，其中 `sekey` 必须是 **URL 解码后**的 `BDCLND`，否则回 `errno 200025 提取码输入错误`。
+
+鲲的资源条目有个坑：条目标注的体积（比如 7.46 GB）和它给的百度链接**没关系**，很多条目给的其实是「模拟器 + 解压工具」那个公共分享（实测只有几个 APK），所以 `save_share` 在转存前会先解析 `file_list` 累加真实体积，小于 `min_resource_gb`（0.3 GB）就判定「不是游戏本体」直接跳过，不浪费转存。条目自带 `state` 字段，`expired` 的分享也会提前跳过。
+
+**关于上传（实测结论）**：`/api/precreate` 必须带 `autoinit=1` 才会返回 `uploadid`（不带只有 `return_type=1` 的秒传标记）；`/api/create?a=commit` 的 `block_list` 要用真实的分片 MD5，填空串会回一个极误导的 `errno -7「该文件所在的文件夹命名不符合要求」`。另外本地文件名要先统一成正斜杠再取 basename，否则 Windows 本机路径整串会被当成文件名传上去，也是 `-7`。
+
 ### 分级队列与停机
 
 `rating_buckets: [8.0, 7.5, 7.0, 6.5, 6.0]`：先从 8.0 分以上捞，捞完这一档再往下走一档，不会一上来就把 6 分档掺进来。累计入库达到 `max_total_gb: 4000` 就软停机：不再接新作品，把手上这一条做完。
@@ -243,12 +249,13 @@ python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载
 ### 数据与测试
 
 - 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` / `magnet_pending` 五张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。
-- 测试：`python -m unittest discover -s tests -t .`（87 项，全部离线夹具，不联网）。
+- 测试：`python -m unittest discover -s tests -t .`（89 项，全部离线夹具，不联网）。
 
 ### 已知局限
 
 - 百度网盘已经不支持磁力离线（`add_task` 对 `type=4` 恒回 `36001 param error`），所以 GGBase 这条线目前只能产出「待处理磁力清单」，真正进网盘只能靠鲲转存或真红直链。
 - 鲲的资源多为「合集」类条目，默认 `allow_collection: false` 会跳过，所以有些作品在鲲上捞不到本体。
+- 鲲很多条目标注的体积和实际分享内容无关（实测 7.46 GB 的条目里只有一个「解压工具」空目录、1.5 GB 的条目里只有 53 MB 的模拟器 APK），已经在转存前按真实 `file_list` 体积筛，但筛掉的条目就没有别的链接可用了——这类作品只能等别家站点。
 - 真红只有直链，走本地下载，受 500 GB/批 配额限制；合集区的直链主机和 ZD CDN 不一样，两种都支持。
 - GGBase 镜像的翻页参数无效（`p=0/1/2` 返回同一批），已按条目 ID 去重，但深层的早期资源搜不到。
 - 标题匹配用相似度（阈值 85），遇到「大戦国ランス / 戦国ランス」这种前缀只差一两个字的不同作品，靠规则压到阈值以下；极短的别名仍可能误命中，最终以 `dryrun` 的人工核对为准。

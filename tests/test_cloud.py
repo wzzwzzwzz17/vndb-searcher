@@ -48,6 +48,22 @@ class ShareParseTest(unittest.TestCase):
         self.assertEqual(len(info["files"]), 1)
         self.assertEqual(info["files"][0]["server_filename"], "rance10.zip")
 
+    def test_parse_share_page_ssr_file_list(self) -> None:
+        # 现在的分享页是服务端渲染的一坨 JSON，前面还有 base64 图片字符串干扰
+        html = (
+            '<script>var ctx = {"img":"data:image/png;base64,AAA\\"file_list\\":[1]","share_uk":"3749931402",'
+            '"shareid":46566184821,"title":"千恋万花","file_list":['
+            '{"fs_id":537214261051438,"server_filename":"game.rar","isdir":0,"size":7460000000},'
+            '{"fs_id":537214261051439,"server_filename":"patch.zip","isdir":0,"size":1000}'
+            '],"tail":1};</script>'
+        )
+        info = parse_share_page(html)
+        self.assertEqual(info["shareid"], "46566184821")
+        self.assertEqual(info["share_uk"], "3749931402")
+        self.assertEqual(len(info["files"]), 2)
+        self.assertEqual(info["files"][0]["server_filename"], "game.rar")
+        self.assertEqual(int(info["files"][0]["size"]), 7460000000)
+
     def test_parse_share_page_loose(self) -> None:
         html = '<div data-shareid="555" data-share_uk="666">加载中</div>'
         info = parse_share_page(html)
@@ -87,6 +103,8 @@ class ClientHelperTest(unittest.TestCase):
         self.assertEqual(posix_parent("/gal_save/_offline/x"), "/gal_save/_offline")
         self.assertEqual(posix_parent("/gal_save"), "/")
         self.assertEqual(posix_name("/gal_save/a.zip"), "a.zip")
+        # Windows 本机路径不能整串当文件名（百度会回 errno -7）
+        self.assertEqual(posix_name(r"C:\gal_save\vndb-searcher\galsave\data\x.png"), "x.png")
         self.assertEqual(join_posix("/gal_save", "_offline", "a"), "/gal_save/_offline/a")
         self.assertEqual(join_posix("/", "a"), "/a")
 
