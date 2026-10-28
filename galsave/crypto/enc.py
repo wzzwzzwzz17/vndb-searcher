@@ -80,6 +80,63 @@ def encrypt_file(
         raise CryptoError(f"源文件是空的: {src_path}")
 
     out_path = Path(dest) if dest else src_path.with_name(src_path.stem + ENCRYPTED_SUFFIX)
+    with open(src_path, "rb") as reader:
+        _encrypt_stream(reader, out_path, password, None, progress, 0, total)
+    return out_path
+
+
+def encrypt_parts(
+    src: str | Path,
+    password: str,
+    part_bytes: int,
+    dest_dir: str | Path | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> list[Path]:
+    """把明文切成若干份，每份单独加密成一个容器，返回容器列表。
+
+    为什么要切：百度分片上传的 block_list 要塞进 URL query（超过约 8KB 就
+    414），所以单片体积必须随文件变大而变大，而 30MB 以上的单片在校园网
+    经常被重置。把每个容器控制在 `part_bytes` 以内，单片就一直是 4–8MB。
+    """
+    src_path = Path(src)
+    if not src_path.is_file():
+        raise CryptoError(f"源文件不存在: {src_path}")
+    total = src_path.stat().st_size
+    if total <= 0:
+        raise CryptoError(f"源文件是空的: {src_path}")
+    if part_bytes <= 0:
+        part_bytes = total
+
+    folder = Path(dest_dir) if dest_dir else src_path.parent
+    parts: list[Path] = []
+    with open(src_path, "rb") as reader:
+        index = 0
+        done = 0
+        while done < total:
+            index += 1
+            if total <= part_bytes:
+                out = src_path.with_name(src_path.stem + ENCRYPTED_SUFFIX)
+            else:
+                out = folder / f"{src_path.stem}.part{index}{ENCRYPTED_SUFFIX}"
+            written = _encrypt_stream(reader, out, password, part_bytes, progress, done, total)
+            if written <= 0:
+                break
+            done += written
+            parts.append(out)
+    return parts
+
+
+def _encrypt_stream(
+    reader,
+    out_path: Path,
+    password: str,
+    limit: int | None,
+    progress: Callable[[int, int], None] | None,
+    base_processed: int,
+    total: int,
+) -> int:
+    """从已打开的 reader 里读最多 limit 字节，写成一个完整容器；返回写进去的明文字节数。"""
+    out_path = Path(out_path)
     if out_path.exists():
         out_path.unlink()
 
@@ -88,30 +145,36 @@ def encrypt_file(
     key = _derive_key(password, salt, KDF_ITERATIONS)
     aead = AESGCM(key)
 
-    processed = 0
-    with open(src_path, "rb") as reader, open(out_path, "wb") as writer:
+    processed = base_processed
+    written = 0
+    with open(out_path, "wb") as writer:
         writer.write(MAGIC)
         writer.write(bytes([VERSION]))
         writer.write(int(KDF_ITERATIONS).to_bytes(4, "big"))
         writer.write(salt)
         writer.write(nonce)
-        while True:
-            block = reader.read(CHUNK)
+        block_index = 0
+        while limit is None or written < limit:
+            want = CHUNK if limit is None else min(CHUNK, limit - written)
+            block = reader.read(want)
             if not block:
                 break
             # 每块单独 encrypt 会产生多个 tag，所以这里用 GCM 的分段更新：
             # cryptography 没有公开流式 API，只对整段做 AEAD 内存也不够，
             # 因此改为「每块独立 nonce + tag」的容器格式。
-            block_nonce = _block_nonce(nonce, processed // CHUNK)
+            block_nonce = _block_nonce(nonce, block_index)
             sealed = aead.encrypt(block_nonce, block, None)
             writer.write(len(block).to_bytes(4, "big"))
             writer.write(block_nonce)
             writer.write(sealed)
             processed += len(block)
+            written += len(block)
+            block_index += 1
             if progress:
                 progress(processed, total)
-
-    return out_path
+    if written <= 0:
+        out_path.unlink(missing_ok=True)
+    return written
 
 
 def _block_nonce(base: bytes, index: int) -> bytes:

@@ -23,7 +23,7 @@ from baidu_cloud.size import measure
 from .config import cget
 from .crawler import Resource
 from .crawler.base import SOURCE_DIRECT, SOURCE_MAGNET, SOURCE_SHARE
-from .crypto.enc import CryptoError, encrypt_file
+from .crypto.enc import CryptoError, encrypt_file, encrypt_parts
 from .downloader.direct import DirectDownloader, DownloadError
 from .downloader.torrent import cleanup_dir
 from .logger import get_logger
@@ -286,33 +286,48 @@ class CloudSaver:
     def _encrypt_and_upload(self, local: Path, folder: str, title: str, site: str,
                             route: str, plain_gb: float) -> SaveResult:
         local = Path(local)
-        payload = local
+        bcfg = self.cfg.get("baidu") or {}
+        split_gb = float(bcfg.get("upload_split_gb") or 1.0)
+        payloads: list[Path] = []
         try:
             if self.encrypt_enabled:
                 if not self.password:
                     raise CryptoError("encrypt.password 为空")
-                payload = encrypt_file(local, self.password)
+                if plain_gb > split_gb:
+                    # 大文件切成多个加密包：每包 <1GB，分片就一直是 4–8MB（大分片会被重置）
+                    payloads = encrypt_parts(local, self.password, int(split_gb * (1000 ** 3)))
+                else:
+                    payloads = [encrypt_file(local, self.password)]
+            else:
+                payloads = [local]
         except (CryptoError, OSError) as exc:
             return SaveResult(False, route, site, error=f"加密失败: {exc}")
 
+        encrypted = [p for p in payloads if p != local]
+
+        def _drop_encrypted() -> None:
+            for path in encrypted:
+                self._cleanup(path)
+
         try:
             self.client.ensure_dir(folder)
-            bcfg = self.cfg.get("baidu") or {}
             parallel = int(bcfg.get("upload_parallel") or 3)
-            remote_path = self._upload(payload, folder, parallel)
+            for payload in payloads:
+                self._upload(payload, folder, parallel)
         except (BaiduError, OSError) as exc:
-            if payload != local:
-                self._cleanup(payload)
+            _drop_encrypted()
             self._remove_if_empty(folder)
             return SaveResult(False, route, site, error=f"上传失败: {exc}")
 
+        _drop_encrypted()
         self.db.add_c_gb(plain_gb)
-        if payload != local:
-            self._cleanup(payload)
-        size_gb = measure(self.client, remote_path)
+        size_gb = measure(self.client, folder)
+        detail = f"本地下载 {plain_gb:.2f}GB 已加密上传"
+        if len(payloads) > 1:
+            detail += f"（切成 {len(payloads)} 个包）"
         # 记目录而不是文件：和转存路线保持同一个口径，reorg/体检都按目录走
         return SaveResult(True, route, site, cloud_path=folder,
-                          size_gb=size_gb or plain_gb, detail=f"本地下载 {plain_gb:.2f}GB 已加密上传")
+                          size_gb=size_gb or plain_gb, detail=detail)
 
     def _upload(self, payload: Path, folder: str, parallel: int) -> str:
         """上传加密包；并发被重置时退回单连接再试一次。"""

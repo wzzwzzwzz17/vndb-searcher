@@ -144,5 +144,17 @@ class Aria2WatchdogTest(unittest.TestCase):
         self.assertEqual(dl._run_aria2(script, work), 1)
 
 
+class MagnetTrackerTest(unittest.TestCase):
+    def test_trackers_are_appended_when_missing(self) -> None:
+        dl = Aria2Downloader(load_config(), tmp_dir=Path(tempfile.mkdtemp()))
+        out = dl._with_trackers("magnet:?xt=urn:btih:abc")
+        self.assertIn("&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce", out)
+
+    def test_existing_trackers_are_kept(self) -> None:
+        dl = Aria2Downloader(load_config(), tmp_dir=Path(tempfile.mkdtemp()))
+        link = "magnet:?xt=urn:btih:abc&tr=udp%3A%2F%2Fmine%3A1%2Fannounce"
+        self.assertEqual(dl._with_trackers(link), link)
+
+
 if __name__ == "__main__":
     unittest.main()

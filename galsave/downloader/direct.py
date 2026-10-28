@@ -152,6 +152,11 @@ class DirectDownloader:
             if expected_size and got == expected_size:
                 self.log.info("复用上次下好的文件：%s（%.2fGB）", target.name, got / 1e9)
                 return target
+            if expected_size and 0 < got < expected_size:
+                # 半成品（比如 aria2 下到一半停了）：改名为 .part，接着续传，别从头再来
+                target.replace(part)
+                self.log.info("发现半成品 %s（%.2f/%.2fGB），改名 .part 继续续传",
+                              target.name, got / 1e9, expected_size / 1e9)
 
         # 有 aria2 就先用它分段下（快）；它自己会接着上次的 .aria2 控制文件续传，
         # 而 requests 那套 .part 半成品只能由 requests 自己续，两者不混用。

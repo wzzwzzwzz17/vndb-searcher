@@ -265,8 +265,9 @@ class CloudSaverRouteTest(unittest.TestCase):
         self.assertTrue(result.ok, result.error)
         self.assertEqual(fake.calls, ["magnet:?xt=urn:btih:abc"])
         self.assertGreater(self.db.c_quota_used_gb(), 0)  # 本机下载要占批次配额
-        self.assertEqual(len(FakeUploader.uploaded), 1)
-        self.assertEqual(Path(FakeUploader.uploaded[0][0]).suffix, ".png")
+        self.assertGreaterEqual(len(FakeUploader.uploaded), 1)
+        self.assertTrue(all(Path(p).suffix == ".png" for p, _ in FakeUploader.uploaded))
+        self.assertTrue(all(not Path(p).exists() for p, _ in FakeUploader.uploaded))
         # aria2 的临时目录要清掉，别留垃圾
         self.assertFalse((self.root / "aria2").exists())
 
@@ -277,11 +278,20 @@ class CloudSaverRouteTest(unittest.TestCase):
         # 记的是目录（和转存同口径），不是加密包的文件名
         self.assertEqual(result.cloud_path, "戦国ランス")
         # 上传的应该是加密后的 .png，不是原始 .rar
-        self.assertEqual(len(FakeUploader.uploaded), 1)
+        self.assertGreaterEqual(len(FakeUploader.uploaded), 1)
         uploaded_local = Path(FakeUploader.uploaded[0][0])
         self.assertEqual(uploaded_local.suffix, ".png")
         self.assertFalse(uploaded_local.exists())  # 传完本地要清掉
         self.assertGreater(self.db.c_quota_used_gb(), 0)  # 直链占本地流量，要记配额
+
+    def test_large_direct_file_is_split_into_several_uploads(self) -> None:
+        # 大文件切包：每包 < upload_split_gb，避免分片被放大到 30MB+ 后被重置
+        self.cfg["baidu"]["upload_split_gb"] = 0.003  # 3MB，8MB 的文件会切 3 包
+        FakeUploader.uploaded.clear()
+        result = self.saver.save_direct("https://zd.shinnku.top/file/big.rar", "作品")
+        self.assertTrue(result.ok, result.error)
+        self.assertGreaterEqual(len(FakeUploader.uploaded), 2)
+        self.assertIn("切成", result.detail)
 
     def test_upload_failure_keeps_local_file_for_retry(self) -> None:
         """上传挂了别把下好的文件删了：下次重试要直接复用，别再花一遍校园流量。"""

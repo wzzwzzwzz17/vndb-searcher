@@ -241,6 +241,9 @@ class Scheduler:
         for res in resources:
             if self.reached_limit():
                 return False
+            if res.source_type not in self._allow_types():
+                # 本轮刚被判死（上传挂了/转存被限流/配额用完）：别再拿后面的候选接着试
+                continue
             try:
                 if not res.link and res.source_type in (SOURCE_MAGNET, SOURCE_DIRECT, SOURCE_SHARE):
                     self.engine.resolve(res)

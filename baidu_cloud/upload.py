@@ -26,7 +26,7 @@ from .client import APP_ID, PCS, PAN, BaiduError, BaiduClient, posix_name
 
 CHUNK_MB = 4
 MAX_BLOCKS = 140  # block_list 要塞在 query 里，约 36 字符一个 MD5，超过 ~8KB 百度直接回 HTTP 414
-CHUNK_RETRIES = 3
+CHUNK_RETRIES = 5
 
 
 class _BoundedReader:

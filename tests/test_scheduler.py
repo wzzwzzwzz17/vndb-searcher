@@ -109,6 +109,18 @@ class SchedulerDecisionTest(unittest.TestCase):
         # 入库记录用 VNDB 的日文原名（用户要求按日文名命名）
         self.assertEqual(row["title"], "ランス10－決戦－")
 
+    def test_upload_failure_stops_trying_more_direct_candidates(self) -> None:
+        # 上传通道挂了就别再下第二条直链，白花校园流量
+        first = make_resource(source=SOURCE_DIRECT, link="https://zd.shinnku.top/file/a.rar")
+        second = make_resource(source=SOURCE_DIRECT, link="https://zd.shinnku.top/file/b.rar")
+        saver = FakeSaver([SaveResult(ok=False, route=SOURCE_DIRECT, site="shinnku",
+                                      error="上传失败: [baidu -1] 连接被重置")])
+        self._install([make_vn()], [first, second], saver)
+        summary = self.sched.run(skip_retries=True)
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(len(saver.saved), 1)  # 第二条没被尝试
+        self.assertFalse(self.sched.c_ok)
+
     def test_bad_link_is_skipped(self) -> None:
         # 已知是诱饵的分享不该再花一次转存
         self.db.add_bad_link("https://pan.baidu.com/s/1bad?pwd=x", "课程/资料")

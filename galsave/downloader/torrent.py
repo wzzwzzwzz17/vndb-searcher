@@ -27,6 +27,14 @@ GB_BYTES = 1000 ** 3
 MIN_FREE_GB = 8.0
 DEFAULT_TIMEOUT_SECONDS = 6 * 3600
 DEFAULT_STALL_SECONDS = 300
+DEFAULT_METADATA_SECONDS = 120
+# 老磁力常常只带 DHT、一个 tracker 都没有，补几个公共 tracker 能多找到些 peer
+DEFAULT_TRACKERS = (
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.tracker.cl:1337/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "http://tracker.openbittorrent.com:80/announce",
+)
 
 
 class Aria2Error(RuntimeError):
@@ -46,6 +54,9 @@ class Aria2Downloader:
         self.seed_time = int(self.bt.get("aria2_seed_time") or 0)
         self.timeout = int(self.bt.get("aria2_timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
         self.stall_seconds = int(self.bt.get("aria2_stall_seconds") or DEFAULT_STALL_SECONDS)
+        self.metadata_seconds = int(
+            self.bt.get("aria2_metadata_seconds") or DEFAULT_METADATA_SECONDS)
+        self.trackers = [str(x) for x in (self.bt.get("aria2_trackers") or DEFAULT_TRACKERS)]
         self.extra_args = [str(x) for x in (self.bt.get("aria2_args") or [])]
 
     @staticmethod
@@ -121,7 +132,7 @@ class Aria2Downloader:
             "--auto-file-renaming=false",
             "--allow-overwrite=true",
             *self.extra_args,
-            str(magnet),
+            self._with_trackers(str(magnet)),
         ]
         self.log.info("aria2 开始下载 %s", tag)
         started = time.time()
@@ -167,6 +178,13 @@ class Aria2Downloader:
                     last_growth = time.time()
                 if time.time() - started > self.timeout:
                     raise subprocess.TimeoutExpired(cmd, self.timeout)
+                if size == 0 and time.time() - started > self.metadata_seconds:
+                    # 连种子元数据都没拿到：这个老磁力多半没人做种了，别干等
+                    self.log.warning("aria2 %.0f 秒没拿到种子元数据（这个磁力大概没种子了），放弃",
+                                     time.time() - started)
+                    proc.terminate()
+                    proc.wait(timeout=30)
+                    return 1
                 idle = time.time() - last_growth
                 if idle > self.stall_seconds:
                     if size == 0:
@@ -187,6 +205,15 @@ class Aria2Downloader:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=30)
+
+    def _with_trackers(self, magnet: str) -> str:
+        """磁力本身没带 tracker 时补几个公共的，老种子的 peer 能多找点。"""
+        if "tr=" in magnet or not self.trackers:
+            return magnet
+        from urllib.parse import quote
+
+        extra = "".join(f"&tr={quote(t, safe='')}" for t in self.trackers)
+        return magnet + extra
 
     # ---------- 产物整理 ----------
     def _package(self, work_dir: Path, files: list[Path], name: str) -> Path:

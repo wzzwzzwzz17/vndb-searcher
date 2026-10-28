@@ -60,6 +60,8 @@ DEFAULTS: dict[str, Any] = {
         # 所有作品都放在 root_dir 下，一部件一个目录，名字统一带 VNDB 编号
         "folder_pattern": "v{id} {name}",
         "upload_chunk_mb": 4,
+        # 超过这个体积就切成多个加密包：大文件的分片会被放大到 30MB+，实测容易被重置
+        "upload_split_gb": 1.0,
         # 上传并发分片数：百度单连接约 1.7MB/s，3 路实测能翻倍
         "upload_parallel": 3,
         "app_id": "250528",
@@ -72,6 +74,15 @@ DEFAULTS: dict[str, Any] = {
         "aria2_timeout_seconds": 21600,
         # aria2 下完经常不肯退出，超过这么久没有新数据就当收工（有 .aria2 控制文件则算失败）
         "aria2_stall_seconds": 300,
+        # 连种子元数据都拿不到（0 字节）超过这么久就放弃：老磁力常常没人做种了
+        "aria2_metadata_seconds": 120,
+        # 磁力没带 tracker 时补的公共 tracker
+        "aria2_trackers": [
+            "udp://tracker.opentrackr.org:1337/announce",
+            "udp://open.tracker.cl:1337/announce",
+            "udp://tracker.torrent.eu.org:451/announce",
+            "http://tracker.openbittorrent.com:80/announce",
+        ],
         "offline_enabled": True,
         "offline_wait_hours": 6.0,
         "poll_seconds": 20.0,

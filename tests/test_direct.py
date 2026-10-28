@@ -168,6 +168,32 @@ class DownloadResumeTest(unittest.TestCase):
             self.assertEqual(path.read_bytes(), BODY)  # 重新下完整
             self.assertEqual(len(session.calls), 1)
 
+    def test_partial_target_is_renamed_and_resumed(self) -> None:
+        # aria2 下到一半留下的整名文件：要当 .part 接着续，不能从头再下一遍
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / safe_filename("game.zip")
+            target.write_bytes(BODY[:3000])
+
+            class HeadOnly(ScriptedSession):
+                def head(self, url, timeout=None, headers=None, allow_redirects=True):
+                    return FakeResp(200, {"Content-Length": str(len(BODY)),
+                                          "Accept-Ranges": "bytes"}, b"")
+
+                def get(self, url, headers=None, stream=False, timeout=None):
+                    self.calls.append(dict(headers or {}))
+                    start = int((headers or {}).get("Range", "bytes=0-").split("=")[1].split("-")[0])
+                    rest = BODY[start:]
+                    return FakeResp(206, {
+                        "Content-Range": f"bytes {start}-{len(BODY) - 1}/{len(BODY)}",
+                        "Content-Length": str(len(rest)),
+                    }, rest)
+
+            session = HeadOnly([])
+            dl = make_downloader(session, tmp)
+            path = dl.download("https://cdn.example.com/game.zip", "game.zip", retries=1)
+            self.assertEqual(path.read_bytes(), BODY)
+            self.assertEqual(session.calls[0].get("Range"), "bytes=3000-")
+
     def test_all_attempts_broken_keeps_part(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             broken = lambda h: FakeResp(200, {"Content-Length": str(len(BODY))}, BODY, break_after=2048)  # noqa: E731

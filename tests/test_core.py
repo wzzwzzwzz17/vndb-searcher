@@ -11,7 +11,13 @@ from unittest import mock
 
 from galsave.config import ConfigError, cget, cpath, load_config
 from galsave.crawler.base import parse_size_gb
-from galsave.crypto.enc import CryptoError, decrypt_file, encrypt_file, is_encrypted
+from galsave.crypto.enc import (
+    CryptoError,
+    decrypt_file,
+    encrypt_file,
+    encrypt_parts,
+    is_encrypted,
+)
 from galsave.db import TaskDB
 from galsave.title_match import best_match, is_match, normalize, search_terms, similarity
 
@@ -235,6 +241,29 @@ class CryptoTest(unittest.TestCase):
             self.assertNotEqual(enc.read_bytes()[: len(payload)], payload)
             out = decrypt_file(enc, "pw")
             self.assertEqual(out.read_bytes(), payload)
+
+    def test_parts_roundtrip(self) -> None:
+        # 大文件切成多个容器：每份单独能解开，拼回来要一模一样
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "big.rar"
+            payload = bytes(range(256)) * 4000  # 1MB
+            src.write_bytes(payload)
+            parts = encrypt_parts(src, "pw", part_bytes=300_000)
+            self.assertEqual(len(parts), 4)
+            self.assertTrue(all(p.suffix == ".png" for p in parts))
+            joined = b""
+            for part in parts:
+                out = decrypt_file(part, "pw", dest=part.with_suffix(".dec"))
+                joined += out.read_bytes()
+            self.assertEqual(joined, payload)
+
+    def test_small_file_stays_one_part(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "small.bin"
+            src.write_bytes(b"x" * 1000)
+            parts = encrypt_parts(src, "pw", part_bytes=1_000_000)
+            self.assertEqual(len(parts), 1)
+            self.assertEqual(parts[0].name, "small.png")
 
     def test_wrong_password(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
