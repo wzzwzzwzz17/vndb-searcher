@@ -88,6 +88,7 @@ class DirectDownloader:
 
         self.log.info("用 aria2 分段下载（%d 连接）: %s", ARIA2_CONNECTIONS, target.name)
         started = time.time()
+        last_report = started
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError as exc:
@@ -95,8 +96,17 @@ class DirectDownloader:
             return False
         while proc.poll() is None:
             time.sleep(3)
-            if progress and target.exists():
-                progress(target.stat().st_size, 0)
+            if not target.exists():
+                continue
+            got = target.stat().st_size
+            if progress:
+                progress(got, 0)
+            now = time.time()
+            if now - last_report >= 30:
+                speed = got / max(1.0, now - started) / (1000 ** 2)
+                self.log.info("  aria2 已下 %.2fGB（%.1fMB/s，%.0f 秒）",
+                              got / GB_BYTES, speed, now - started)
+                last_report = now
         if proc.returncode != 0:
             self.log.warning("aria2 退出码 %s（文件 %s 字节）", proc.returncode,
                              target.stat().st_size if target.exists() else 0)

@@ -235,11 +235,21 @@ VNDB 的 `olang` 字段是「官方原始语言」。`galsave/vndb.py` 在 VNDB 
 分片这块有三条实测出来的坑：
 1. `block_list` **只能放 query**。放 body（不管其余参数怎么摆）时 `precreate` 照样返回 `uploadid`，但接着传分片会在 30MB 上下被服务器掐断连接——双向都复现。
 2. 放 query 就有 URL 长度上限：100 个 MD5（约 3.6KB）能过，220 个（7.9KB）就开始 `HTTP 414 URI Too Long`。所以 `MAX_BLOCKS = 140`，文件一大就自动把分片调大（`ceil(大小/140)`），而不是硬塞更多分片；分片内容用 `_BoundedReader` 流式上传，不会把一整个大分片读进内存。
-3. `d.pcs.baidu.com` 个别节点用的是弱密钥证书，Python 3.13+ 会直接拒：`EE certificate key too weak`。重试时换一个把 OpenSSL 安全等级降到 `SECLEVEL=1` 的会话（证书链照样校验），单分片失败最多重试 3 次。
+3. `d.pcs.baidu.com` 个别节点用的是弱密钥证书，Python 3.13+ 会直接拒：`EE certificate key too weak`。重试时换一个把 OpenSSL 安全等级降到 `SECLEVEL=1` 的会话（证书链照样校验），单分片失败最多重试 5 次。
 
-600MB 真机上传（自动放大到 5MB×120 片）已跑通，`verify` 大小一致。
+由此还引出一条策略：**大于 `upload_split_gb`（默认 1 GB）的文件先切成多个独立的加密包**（`<名>.part1.png` …）。因为 block_list 只能放 query，1 GB 一个包时每片 7 MB、137 片，刚好在 URL 上限内；而不切包的话 4.5 GB 一个文件会被迫用 33 MB 的分片，这种大分片在校园网上几乎每片都会被 `ConnectionResetError(10054)` 掐断。
+
+上传本身是并发的（`upload_parallel`，默认 3 路）：120 MB 随机文件 1 路 45.2 s（2.78 MB/s）、3 路 9.5 s（13.21 MB/s），`verify` 都通过。并发整体失败时会自动退回单连接重试一遍。
+
+600MB 真机上传（自动放大到 5MB×120 片）已跑通，`verify` 大小一致；4.58 GB 真机全链（1 GB×5 包、每包 7 MB×137 片、期间几十次连接重置全部重试成功）也已入库。
+
+上传失败时**本地文件不删**（留在 `galsave/data/tmp`，下次直接复用，直链不会再花一遍流量），并且本轮不再尝试其它直链候选——校园流量额度留给下轮。只有成功入库或明确配额不足才清理本地。
 
 **关于直链（实测结论）**：`zd.shinnku.top` / `galgamedownload.date` 传几 GB 的文件时经常中途断流（`Connection broken: IncompleteRead`），而且**不支持一次传完**。所以下载改成 `.part` + `Range` 续传：断开就带着已有字节重连，服务器忽略 Range（回 200）时才从头来；只要还在长就继续重试，连续两轮零进展才放弃，`.part` 留着下次接着下（`cleanup_tmp` 也不会删 `.part`）。
+
+单连接会被同一个 CDN 限到 0.19–1.5 MB/s，几 GB 要下几个小时。所以 `crawler.aria2_direct: true` 时改用 aria2 分段下（`--split=8 --max-connection-per-server=8`），实测 1.1–6 MB/s。aria2 会把文件预先 `ftruncate` 到全长，**不能用本机文件大小算速度**，得看它自己的进度行。已经下好但还没来得及删的半成品（`.rar` 但没有 `.part`）会先跟服务器核对 `Content-Length`，一致就直接复用；不一致且比全长小就改名成 `.part` 接着续传。
+
+**关于磁力（实测结论）**：GGBase 的磁力能解析、aria2 也能下，但 2DGF 时代的老种子**基本没人做种**——实测 v7771 / v2016 / v24 / v1141 四个候选都是 41 秒拿不到 metadata（`CN:0`），只有 Sintel 那种热门资源 4 秒就能拿到。所以磁力默认只当兜底：先补几个公共 tracker（`aria2_trackers`），`aria2_metadata_seconds`（默认 120 秒）内拿不到元数据就放弃并登记到 `magnet_pending`，不会干等 6 小时。
 
 **关于建目录（实测结论）**：`/api/create?a=commit` 对**已经存在**的目录不报错，而是又建一个 `同名_20261028_143012` 的兄弟目录（真的这么干）。所以 `ensure_dir()` 每级都先列父目录确认存在性再建，否则每跑一部作品云端就多几个带时间戳的空目录。
 
@@ -301,7 +311,7 @@ python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载
 ### 数据与测试
 
 - 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` / `magnet_pending` / `bad_link` 六张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。
-- 测试：`python -m unittest discover -s tests -t .`（159 项，全部离线夹具，不联网）；`python -m galsave selftest` 是 19 项纯本地自检。
+- 测试：`python -m unittest discover -s tests -t .`（188 项，全部离线夹具，不联网）；`python -m galsave selftest` 是 19 项纯本地自检。
 
 ### 已知局限
 
@@ -309,7 +319,8 @@ python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载
 - 鲲的资源多为「合集」类条目，默认 `allow_collection: false` 会跳过，所以有些作品在鲲上捞不到本体。
 - 鲲有些作品的候选条目里，真实分享已经被替换成「模拟器 + 解压工具」打包，或者干脆是课程/资料包（体积还是十几 GB）。转存前按标题词、转存后按文件类型两道筛，能挡掉大部分，但仍有漏网的，遇到就用 `python -m galsave prune` 体检一次。
 - 真红只有直链，走本地下载，受 500 GB/批 配额限制；合集区的直链主机和 ZD CDN 不一样，两种都支持。
-- 磁力路线要求本机装了 aria2；没装时只能登记清单，这一点 `galsave status` 和日志里都会写出来。
+- 磁力路线要求本机装了 aria2；没装时只能登记清单，这一点 `galsave status` 和日志里都会写出来。装上了也常常没种：老磁力大多 `CN:0`，元数据 120 秒拿不到就放弃。
+- 直链受校园网影响大：单连接被限速到 1 MB/s 左右，大文件只能靠 aria2 多连接；上传分片也常被重置，靠 5 次重试 + 切成 1 GB 包才稳定。
 - GGBase 镜像的翻页参数无效（`p=0/1/2` 返回同一批），已按条目 ID 去重，但深层的早期资源搜不到。
 - 标题匹配用相似度（阈值 85），遇到「大戦国ランス / 戦国ランス」这种前缀只差一两个字的不同作品，靠规则压到阈值以下；极短的别名仍可能误命中，最终以 `dryrun` 的人工核对为准。
 
