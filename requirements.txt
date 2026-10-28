@@ -1,0 +1,10 @@
+# 网页 / 桌面版 / 安卓外挂脚本之外的工具链里，只有 galsave（收藏库流水线）需要这些。
+# 桌面版（PyQt5）和安卓打包用到的依赖见 README 对应章节。
+requests>=2.31
+PyYAML>=6.0
+cryptography>=42.0
+
+# 可选：让 `python -m baidu_cloud.auth login` 直接拉起真实浏览器窗口扫码/账号密码登录。
+# 不装也能用：没装时走系统浏览器 + 粘贴 Cookie 的流程。
+# playwright>=1.40
+#   pip install playwright && python -m playwright install chromium

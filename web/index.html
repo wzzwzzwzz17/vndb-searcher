@@ -244,7 +244,7 @@
       }
       note.textContent = row.judge
         ? "这一页只有 1 到 3 条，没有要求完全或一半对上。栏目上的名字如下，请自行判断是不是这部作品。"
-        : "只用日文搜索：先全名，再连续一半，再随机四分之一。";
+        : "先按日文名搜索（全名、连续一半、随机四分之一），日文落空时改用英文名再搜一轮。";
       (row.pages || []).slice(0, 3).forEach((item) => {
         if (!item.page || !/https:\/\/www\.ggbases\.com\/view\.so\?id=\d+$/.test(item.page)) return;
         const a = document.createElement("a");

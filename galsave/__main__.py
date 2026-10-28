@@ -1,0 +1,274 @@
+# -*- coding: utf-8 -*-
+"""命令行入口。
+
+    python -m galsave login      # 打开浏览器窗口登录百度网盘（用户本人操作）
+    python -m galsave status     # 看登录态、入库量、批次配额
+    python -m galsave plan       # 各分数档还有多少部可以捞
+    python -m galsave dryrun X   # 只搜索不下载，看某部作品能找到什么
+    python -m galsave run        # 正式跑：分级 → 搜索 → 落地 → 入库
+    python -m galsave quota      # 查网盘容量
+    python -m galsave decrypt F  # 把 C 路线加密文件还原到本地
+    python -m galsave selftest   # 纯本地自检，不联网
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from .config import ConfigError, cpath, load_config
+from .db import TaskDB
+from .logger import get_logger, setup_logging
+
+
+def _bootstrap(args: argparse.Namespace) -> dict:
+    cfg = load_config(getattr(args, "config", None))
+    setup_logging(cpath(cfg, "paths.log_dir"))
+    return cfg
+
+
+def cmd_login(args: argparse.Namespace) -> int:
+    _bootstrap(args)
+    from baidu_cloud import auth
+
+    if args.clear:
+        print("已删除本机凭据。" if auth.clear_credentials() else "没有可删除的凭据。")
+        return 0
+    if args.text:
+        from baidu_cloud.client import BaiduClient
+
+        client = BaiduClient.from_cookie_text(args.text)
+        if not client.check_login():
+            print("粘贴的 Cookie 验证没通过（可能复制不完整或已经过期）。")
+            return 1
+        info = client.user_info()
+        print(f"已用粘贴的 Cookie 登录：{info.get('name') or '(未取到昵称)'}")
+        return 0
+    ok = auth.login(force=bool(getattr(args, "force", False)))
+    if ok:
+        print("登录态验证通过。" if auth.verify() else "凭据已保存，但验证没通过。")
+    return 0 if ok else 1
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    cfg = _bootstrap(args)
+    from baidu_cloud import auth
+
+    db = TaskDB(cpath(cfg, "paths.db"))
+    stats = db.stats()
+    print(f"配置文件 : {cfg.get('_path', 'config.yaml')}")
+    print(f"数据库   : {stats['db']}")
+    print(f"已入库   : {stats['entries']} 部 / {stats['total_gb']:.2f}GB "
+          f"（上限 {float(cfg.get('max_total_gb') or 0):.0f}GB）")
+    print(f"来源分布 : {stats['by_source'] or '空'}")
+    print(f"待重试   : {stats['retry']} 条")
+    print(f"C 源本批 : {stats['c_quota_gb']:.2f}GB / {float(cfg.get('c_quota_per_batch_gb') or 0):.0f}GB")
+
+    if not auth.is_logged_in():
+        print("网盘登录 : 未登录（执行 python -m galsave login）")
+        return 1
+    from baidu_cloud import BaiduClient
+
+    try:
+        valid = BaiduClient().check_login()
+    except Exception as exc:  # noqa: BLE001 - 只是展示信息
+        print(f"网盘登录 : 检查失败（{exc}）")
+        return 1
+    if not valid:
+        print("网盘登录 : 凭据已过期（执行 python -m galsave login 重新登录）")
+        return 1
+    print("网盘登录 : 已登录")
+    if args.quota:
+        try:
+            client = BaiduClient()
+            info = client.user_info()
+            quota = client.quota()
+            print(f"账号     : {info.get('name') or '(未知)'}")
+            print(f"网盘容量 : 总 {quota['total_gb']:.1f}GB / 已用 {quota['used_gb']:.1f}GB / "
+                  f"剩余 {quota['free_gb']:.1f}GB")
+        except Exception as exc:  # noqa: BLE001 - 只是展示信息
+            print(f"查询网盘信息失败: {exc}")
+    return 0
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    cfg = _bootstrap(args)
+    from .scheduler import Scheduler
+
+    scheduler = Scheduler(cfg)
+    rows = scheduler.plan(max_pages=args.pages)
+    print(f"{'分数档':>6}  {'该档作品数':>10}  {'未入库':>8}")
+    for row in rows:
+        if row.get("count", 0) < 0:
+            print(f"{row['bucket']:>6.1f}  {'查询失败':>10}  {row.get('error', '')}")
+            continue
+        print(f"{row['bucket']:>6.1f}  {row['count']:>10}  {row['todo']:>8}")
+    print(f"\n已入库 {scheduler.db.count_done()} 部 / {scheduler.total_gb():.2f}GB "
+          f"/ 上限 {scheduler.max_total_gb:.0f}GB")
+    return 0
+
+
+def cmd_dryrun(args: argparse.Namespace) -> int:
+    cfg = _bootstrap(args)
+    from .crawler import SearchEngine
+    from .vndb import VndbClient
+
+    vndb = VndbClient(cfg)
+    if args.query.lower().startswith("v") and args.query[1:].isdigit():
+        vn = vndb.get_vn(args.query.lower())
+        vns = [vn] if vn else []
+    else:
+        vns = vndb.search(args.query, limit=args.limit)
+    if not vns:
+        print(f"VNDB 上没找到: {args.query}")
+        return 1
+
+    engine = SearchEngine(cfg)
+    for vn in vns:
+        print(f"\n{vn.id}  {vn.title}  ({vn.display_rating})  olang={vn.olang}")
+        print(f"  别名: {', '.join(vn.names[1:4])}")
+        if vn.olang and vn.olang != "ja":
+            print("  ⚠ 官方原始语言不是日语，正式跑会被跳过")
+        found = engine.find(vn.names)
+        if not found:
+            print("  三站都没有匹配资源")
+            continue
+        for res in found[:8]:
+            print(f"  - {res}")
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    cfg = _bootstrap(args)
+    from .scheduler import Scheduler
+
+    buckets = None
+    if args.buckets:
+        buckets = [float(x) for x in str(args.buckets).replace(" ", "").split(",") if x]
+    scheduler = Scheduler(cfg)
+    summary = scheduler.run(buckets=buckets, max_vns=args.max_vns, skip_retries=args.no_retries)
+    print(f"\n本次成功 {summary['success']} 部，失败 {summary['failed']} 部，"
+          f"累计 {summary['total_gb']:.2f}GB / {summary['entries']} 部")
+    return 0
+
+
+def cmd_quota(args: argparse.Namespace) -> int:
+    cfg = _bootstrap(args)
+    from baidu_cloud import BaiduClient
+    from baidu_cloud.client import BaiduError
+
+    client = BaiduClient()
+    if not client.check_login():
+        print("百度网盘登录信息无效或过期，请执行: python -m galsave login")
+        return 1
+    try:
+        info = client.user_info()
+        quota = client.quota()
+    except BaiduError as exc:
+        print(f"查询失败: {exc}")
+        return 1
+    print(f"账号   : {info.get('name') or '(未知)'}  会员: {'是' if info.get('vip') else '未知/否'}")
+    print(f"总空间 : {quota['total_gb']:.1f}GB")
+    print(f"已用   : {quota['used_gb']:.1f}GB")
+    print(f"剩余   : {quota['free_gb']:.1f}GB")
+    root = str((cfg.get("baidu") or {}).get("root_dir") or "/gal_save")
+    try:
+        used = client.dir_size_gb(root)
+        print(f"{root} 占 {used:.2f}GB")
+    except Exception as exc:  # noqa: BLE001
+        print(f"统计 {root} 失败: {exc}")
+    return 0
+
+
+def cmd_decrypt(args: argparse.Namespace) -> int:
+    cfg = _bootstrap(args)
+    from .crypto.enc import CryptoError, decrypt_file
+
+    password = args.password or str((cfg.get("encrypt") or {}).get("password") or "")
+    src = Path(args.file)
+    if not src.exists():
+        print(f"文件不存在: {src}")
+        return 1
+    dest = Path(args.out) if args.out else None
+    try:
+        out = decrypt_file(src, password, dest=dest)
+    except CryptoError as exc:
+        print(f"解密失败: {exc}")
+        return 1
+    print(f"已还原到 {out}")
+    return 0
+
+
+def cmd_selftest(args: argparse.Namespace) -> int:
+    from .selftest import run_selftest
+
+    return run_selftest()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m galsave",
+        description="VNDB 分级评分 → 三站搜索 → 百度网盘归档（仅个人收藏，不传播）",
+    )
+    parser.add_argument("--config", help="指定配置文件（默认仓库根 config.yaml）")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_login = sub.add_parser("login", help="登录百度网盘（会打开浏览器窗口）")
+    p_login.add_argument("--text", help="直接粘贴浏览器里的一整行 Cookie（无浏览器时用）")
+    p_login.add_argument("--clear", action="store_true", help="删除本机保存的凭据")
+    p_login.add_argument("--force", action="store_true", help="忽略已保存的凭据，强制重新登录")
+    p_login.set_defaults(func=cmd_login)
+
+    p_status = sub.add_parser("status", help="查看登录态与入库统计")
+    p_status.add_argument("--quota", action="store_true", help="同时查网盘容量（会联网）")
+    p_status.set_defaults(func=cmd_status)
+
+    p_plan = sub.add_parser("plan", help="查看各分数档还有多少部")
+    p_plan.add_argument("--pages", type=int, default=10, help="每档最多翻几页（默认 10）")
+    p_plan.set_defaults(func=cmd_plan)
+
+    p_dry = sub.add_parser("dryrun", help="只搜索不下载")
+    p_dry.add_argument("query", help="VNDB id（如 v17）或作品名")
+    p_dry.add_argument("--limit", type=int, default=3, help="按名字搜索时最多看几部")
+    p_dry.set_defaults(func=cmd_dryrun)
+
+    p_run = sub.add_parser("run", help="正式运行")
+    p_run.add_argument("--buckets", help="只跑指定分数档，如 8.0,7.5")
+    p_run.add_argument("--max-vns", type=int, default=0, help="本次最多处理几部（0=不限）")
+    p_run.add_argument("--no-retries", action="store_true", help="跳过重试队列")
+    p_run.set_defaults(func=cmd_run)
+
+    sub.add_parser("quota", help="查网盘容量").set_defaults(func=cmd_quota)
+
+    p_dec = sub.add_parser("decrypt", help="还原 C 路线加密文件")
+    p_dec.add_argument("file")
+    p_dec.add_argument("--out", help="输出路径")
+    p_dec.add_argument("--password", help="覆盖配置里的密码")
+    p_dec.set_defaults(func=cmd_decrypt)
+
+    sub.add_parser("selftest", help="本地自检（不联网）").set_defaults(func=cmd_selftest)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return int(args.func(args) or 0)
+    except ConfigError as exc:
+        print(f"配置错误: {exc}")
+        return 2
+    except KeyboardInterrupt:
+        print("\n已中断。")
+        return 130
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 - CLI 顶层兜底
+        get_logger().exception("运行失败: %s", exc)
+        print(f"运行失败: {exc}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

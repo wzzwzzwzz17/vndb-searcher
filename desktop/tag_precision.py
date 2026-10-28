@@ -117,6 +117,7 @@ def search_weighted_tags(selected: list[dict[str, Any]], exclude_ids: list[str] 
     for vn_id in (exclude_ids or [])[-25:]:
         if isinstance(vn_id, str) and vn_id.startswith("v"):
             predicates.append(["id", "!=", vn_id])
+    predicates.append(["olang", "=", "ja"])
     filters: Any = predicates[0] if len(predicates) == 1 else ["and", *predicates]
     items = VndbClient().search_vn(
         {
@@ -130,6 +131,9 @@ def search_weighted_tags(selected: list[dict[str, Any]], exclude_ids: list[str] 
     )
     from community_scores import attach_community_scores
     from result_enrich import enrich_result_items
+    from vndb_api import filter_items_japanese
+
+    items = filter_items_japanese(items)
 
     search_ids = {row[2][0] for row in predicates if row[0] == "tag"}
     enrich_result_items(items, search_ids, top_n=4)

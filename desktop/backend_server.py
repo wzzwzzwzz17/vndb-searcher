@@ -24,8 +24,10 @@ from tag_matcher import find_candidate_tags
 from vndb_api import (
     FilterValidationError,
     VndbClient,
+    ensure_japanese_original,
     ensure_min_year_filter,
     filter_items_by_min_year,
+    filter_items_japanese,
     force_single_core_query,
     relax_filters,
     validate_query,
@@ -64,6 +66,7 @@ def format_results(items: list[dict[str, Any]], meta: dict[str, Any]) -> str:
         lines.append("※ 单核心标签: 已启用（仅按 1 个核心标签搜索）")
     if meta.get("min_year"):
         lines.append(f"※ 年份下限: {meta['min_year']} 年及以后")
+    lines.append("※ 官方原始语言: 仅日语（olang=ja）")
     if meta.get("action"):
         lines.append(f"※ 本轮动作: {meta['action']}")
     if meta.get("relaxed"):
@@ -161,6 +164,7 @@ def _run_vndb(
     relaxed = False
 
     q = dict(query)
+    q["filters"] = ensure_japanese_original(q.get("filters"))
     q["filters"] = ensure_min_year_filter(q.get("filters"), year)
     body = validate_query(q)
     q["filters"] = body["filters"]
@@ -179,9 +183,10 @@ def _run_vndb(
         and not exclude_ids
     ):
         relaxed_q = dict(q)
-        relaxed_q["filters"] = ensure_min_year_filter(
-            relax_filters(q["filters"], search_mode=mode), year
+        relaxed_q["filters"] = ensure_japanese_original(
+            relax_filters(q["filters"], search_mode=mode)
         )
+        relaxed_q["filters"] = ensure_min_year_filter(relaxed_q["filters"], year)
         try:
             validate_query(relaxed_q)
             items = client.search_vn(relaxed_q, use_cache=False)
@@ -191,6 +196,7 @@ def _run_vndb(
             pass
 
     items = filter_items_by_min_year(items, year)
+    items = filter_items_japanese(items)
     if exclude_ids:
         ban = set(exclude_ids)
         items = [it for it in items if it.get("id") not in ban]

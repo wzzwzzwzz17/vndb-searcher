@@ -147,7 +147,7 @@
         h.textContent = {kungal:"鲲 Galgame", touchgal:"TouchGal", shinnku:"真红小站", ggbase:"GGBase"}[key];
         box.appendChild(h);
         const p = document.createElement("p");
-        if (key === "ggbase") p.textContent = row.ok ? (row.judge ? "这一页只有 1 到 3 条。栏目上的名字如下，请自行判断是不是这部作品。" : "只用日文全名、连续一半和随机四分之一搜索。") : (row.reason || "没有资料");
+        if (key === "ggbase") p.textContent = row.ok ? (row.judge ? "这一页只有 1 到 3 条。栏目上的名字如下，请自行判断是不是这部作品。" : "先按日文全名、连续一半和随机四分之一搜索，日文落空时改用英文名再搜。") : (row.reason || "没有资料");
         else p.textContent = row.ok ? ((row.tags || []).join("、") || "没有标签") : (row.reason || "没有资料");
         box.appendChild(p);
         if (row.intro) {

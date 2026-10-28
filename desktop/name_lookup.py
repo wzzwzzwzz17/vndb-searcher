@@ -13,7 +13,7 @@ from openai import OpenAI
 
 import config
 from community_scores import _shinnku_pages, attach_community_scores
-from vndb_api import VndbClient
+from vndb_api import VndbClient, filter_items_japanese
 
 _BING_HEADERS = {
     "User-Agent": (
@@ -98,7 +98,12 @@ def _vndb_hits(analysis: dict[str, Any], user_name: str) -> list[dict[str, Any]]
             continue
         try:
             hits = client.search_vn(
-                {"filters": ["search", "=", text], "sort": "searchrank", "reverse": True, "limit": 5},
+                {
+                    "filters": ["and", ["search", "=", text], ["olang", "=", "ja"]],
+                    "sort": "searchrank",
+                    "reverse": True,
+                    "limit": 5,
+                },
                 use_cache=False,
             )
         except Exception:
@@ -109,7 +114,7 @@ def _vndb_hits(analysis: dict[str, Any], user_name: str) -> list[dict[str, Any]]
                 found.append(item)
         if len(found) >= 10:
             break
-    return found[:10]
+    return filter_items_japanese(found)[:10]
 
 
 def lookup_name(user_name: str, must_find: bool = False) -> dict[str, Any]:

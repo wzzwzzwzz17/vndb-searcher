@@ -420,6 +420,30 @@
     return ["and", cleaned, pred];
   }
 
+  function stripOlang(node) {
+    if (!Array.isArray(node) || !node.length) return node;
+    if (node[0] === "and" || node[0] === "or") {
+      const kids = [];
+      node.slice(1).forEach((c) => {
+        const s = stripOlang(c);
+        if (s) kids.push(s);
+      });
+      if (!kids.length) return null;
+      if (kids.length === 1 && node[0] === "and") return kids[0];
+      return [node[0]].concat(kids);
+    }
+    if (node[0] === "olang") return null;
+    return node;
+  }
+
+  function ensureJapanese(filters) {
+    const pred = ["olang", "=", "ja"];
+    const cleaned = stripOlang(unwrap(filters));
+    if (!cleaned) return pred;
+    if (cleaned[0] === "and") return ["and"].concat(cleaned.slice(1), [pred]);
+    return ["and", cleaned, pred];
+  }
+
   function searchTagIds(filters, roles) {
     const ids = {};
     function walk(node) {
@@ -573,8 +597,8 @@
 
   async function vndb(query) {
     const body = {
-      filters: query.filters,
-      fields: "title,alttitle,rating,description,released,votecount,developers{name,original},tags{id,rating,spoiler}",
+      filters: ensureJapanese(query.filters),
+      fields: "title,alttitle,olang,rating,description,released,votecount,developers{name,original},tags{id,rating,spoiler}",
       sort: query.sort || "rating",
       reverse: true,
       results: 10,
@@ -585,7 +609,9 @@
       "User-Agent": "VNDB-Searcher/1.0 (Android; author: yulibaitiao)"
     });
     const data = JSON.parse(res.body);
-    return (data.results || []).map(mapVn);
+    return (data.results || [])
+      .filter((raw) => !raw.olang || raw.olang === "ja")
+      .map(mapVn);
   }
 
   function excludeIds(filters, ids) {
@@ -1283,6 +1309,40 @@
     return "";
   }
 
+  function englishSource(queries, japanese) {
+    const texts = [];
+    queries.slice().reverse().forEach((text) => {
+      const cleaned = String(text || "").replace(/\s+/g, " ").trim();
+      if (cleaned && texts.indexOf(cleaned) < 0 && /[a-z]/i.test(cleaned)) texts.push(cleaned);
+    });
+    return (texts[0] && texts[0].toLowerCase() !== String(japanese || "").toLowerCase()) ? texts[0] : "";
+  }
+
+  function ggbaseEnglishTerms(text, mustFind) {
+    const terms = [];
+    function add(value) {
+      const cleaned = String(value || "").replace(/\s+/g, " ").trim();
+      if (ggbaseNorm(cleaned).length < 2 || terms.indexOf(cleaned) >= 0) return;
+      terms.push(cleaned);
+    }
+    add(text);
+    const words = text.split(/\s+/).filter(Boolean);
+    if (words.length >= 3) {
+      add(words.slice(0, 3).join(" "));
+      add(words.slice(-2).join(" "));
+    }
+    add(text.replace(/\s*[\(\[\{][\s\S]*?[\)\]\}]\s*/g, " ").trim());
+    return terms.slice(0, mustFind ? 6 : 4);
+  }
+
+  function ggbaseEnglishMatch(query, columnName) {
+    const left = ggbaseNorm(query);
+    const right = ggbaseNorm(columnName);
+    if (left.length < 3 || right.length < 3) return false;
+    if (right.indexOf(left) >= 0 || left.indexOf(right) >= 0) return true;
+    return ggbaseScore(query, columnName) >= 0.82;
+  }
+
   function ggbaseTerms(text, mustFind) {
     const terms = [];
     function add(value) {
@@ -1375,22 +1435,37 @@
 
   async function ggbasePages(queries, mustFind) {
     const japanese = japaneseSource(queries);
-    const terms = japanese ? ggbaseTerms(japanese, mustFind) : [];
-    if (!terms.length) return { ok: false, reason: "没有日文名，GGBase 只按日文搜索", pages: [] };
+    const english = englishSource(queries, japanese);
+    if (!japanese && !english) return { ok: false, reason: "没有可用的日文或英文名", pages: [] };
     try {
-      for (let i = 0; i < terms.length; i++) {
-        if (i) await new Promise((resolve) => setTimeout(resolve, 200));
-        const items = await searchGgbaseOnce(terms[i]);
-        if (items.length > 0 && items.length < 4) return ggbasePack(items, true);
-        const matched = items.filter((item) => ggbaseFullOrHalf(japanese, item.name));
-        if (!matched.length) continue;
-        matched.sort((a, b) => (ggbaseScore(japanese, b.name) - ggbaseScore(japanese, a.name)) || (a.name.length - b.name.length));
-        return ggbasePack(matched.slice(0, 3), false);
+      if (japanese) {
+        const terms = ggbaseTerms(japanese, mustFind);
+        for (let i = 0; i < terms.length; i++) {
+          if (i) await new Promise((resolve) => setTimeout(resolve, 200));
+          const items = await searchGgbaseOnce(terms[i]);
+          if (items.length > 0 && items.length < 4) return ggbasePack(items, true);
+          const matched = items.filter((item) => ggbaseFullOrHalf(japanese, item.name));
+          if (!matched.length) continue;
+          matched.sort((a, b) => (ggbaseScore(japanese, b.name) - ggbaseScore(japanese, a.name)) || (a.name.length - b.name.length));
+          return ggbasePack(matched.slice(0, 3), false);
+        }
+      }
+      if (english) {
+        const terms = ggbaseEnglishTerms(english, mustFind);
+        for (let i = 0; i < terms.length; i++) {
+          if (i) await new Promise((resolve) => setTimeout(resolve, 200));
+          const items = await searchGgbaseOnce(terms[i]);
+          if (items.length > 0 && items.length < 4) return ggbasePack(items, true);
+          const matched = items.filter((item) => ggbaseEnglishMatch(english, item.name));
+          if (!matched.length) continue;
+          matched.sort((a, b) => (ggbaseScore(english, b.name) - ggbaseScore(english, a.name)) || (a.name.length - b.name.length));
+          return ggbasePack(matched.slice(0, 3), false);
+        }
       }
     } catch (e) {
       return { ok: false, reason: "GGBase 暂时连不上", pages: [] };
     }
-    return { ok: false, reason: "GGBase 用日文名和片段搜过，没有可列出的栏目", pages: [] };
+    return { ok: false, reason: "GGBase 用日文名和英文名都搜过，没有可列出的栏目", pages: [] };
   }
 
   async function lookupSite(kind, keyword) {

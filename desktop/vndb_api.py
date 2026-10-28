@@ -40,11 +40,11 @@ ALLOWED_OPS = {"=", "!=", ">=", ">", "<=", "<"}
 ALLOWED_SORT = {"id", "title", "released", "rating", "votecount", "searchrank"}
 TAG_ID_RE = re.compile(r"^g\d+$")
 VN_FIELDS = (
-    "title, alttitle, rating, description, released, votecount, "
+    "title, alttitle, olang, rating, description, released, votecount, "
     "tags.id, tags.rating, tags.spoiler"
 )
 VN_DETAIL_FIELDS = (
-    "title, alttitle, rating, description, released, votecount, "
+    "title, alttitle, olang, rating, description, released, votecount, "
     "developers.name, developers.original, developers.id, "
     "tags.id, tags.rating, tags.spoiler"
 )
@@ -347,6 +347,51 @@ def ensure_min_year_filter(filters: Any, min_year: int) -> Any:
     return ["and", cleaned, year_pred]
 
 
+def ensure_japanese_original(filters: Any) -> Any:
+    """强制官方原始语言为日语：剥掉旧 olang 条件，统一加 ["olang", "=", "ja"]。"""
+    node = normalize_filters(filters)
+
+    def strip_olang(n: Any) -> Any:
+        if not isinstance(n, list) or not n:
+            return n
+        if n[0] in ("and", "or"):
+            kids = []
+            for c in n[1:]:
+                sc = strip_olang(c)
+                if sc is None:
+                    continue
+                kids.append(sc)
+            if not kids:
+                return None
+            if len(kids) == 1 and n[0] == "and":
+                return kids[0]
+            return [n[0], *kids]
+        if n[0] == "not":
+            return n
+        if len(n) == 3 and n[0] == "olang":
+            return None
+        return n
+
+    cleaned = strip_olang(node)
+    ja_pred = ["olang", "=", "ja"]
+    if cleaned is None:
+        return ja_pred
+    if isinstance(cleaned, list) and cleaned and cleaned[0] == "and":
+        return ["and", *cleaned[1:], ja_pred]
+    return ["and", cleaned, ja_pred]
+
+
+def filter_items_japanese(items: list[dict]) -> list[dict]:
+    """本地兜底：VNDB 返回的 olang 不是 ja 时丢弃（字段缺失时保守保留）。"""
+    out = []
+    for it in items:
+        olang = (it.get("olang") or "").strip()
+        if olang and olang != "ja":
+            continue
+        out.append(it)
+    return out
+
+
 def filter_items_by_min_year(items: list[dict], min_year: int) -> list[dict]:
     """本地再滤一层发售年份（released 可能是 YYYY / YYYY-MM / YYYY-MM-DD）。"""
     out = []
@@ -459,6 +504,7 @@ def clean_results(raw: dict[str, Any], desc_limit: int = 280) -> list[dict[str, 
                 "id": vid,
                 "title": item.get("title") or "",
                 "original": item.get("alttitle") or "",
+                "olang": item.get("olang") or "",
                 "rating": round(rating / 10, 2) if isinstance(rating, (int, float)) else None,
                 "rating_raw": rating,
                 "description": desc,

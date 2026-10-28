@@ -8,6 +8,7 @@
 
 - 中文描述映射到 VNDB 官方标签（内置约 3000 个标签名）
 - 三种搜索方式，条件在本地强制执行，不单靠模型自觉
+- 只取官方原始语言为日语的作品（olang=ja），不搜英语原版游戏
 - 只按一个核心标签搜索
 - 发售年份下限
 - 刷新时避开已经看过的作品
@@ -95,7 +96,7 @@ cd ..\web
 python server.py
 ```
 
-浏览器打开 `http://127.0.0.1:8787/`。顶部三个链接分别是 `/`、`/name`、`/tags`。点开作品详情时，网页会按真红小站的方式查 GGBase，但只用日文名：先全名，再连续一半，再随机四分之一。某一页的栏目少于 4 条时，这些栏目页和栏目上显示的名字都会列出，方便自行判断。结果更多时，只保留日文全名或一半能对上的，最多 3 个栏目页（`view.so?id=`）。这一步只在网页端，不进安卓包，也不返回磁力或压缩包地址。
+浏览器打开 `http://127.0.0.1:8787/`。顶部三个链接分别是 `/`、`/name`、`/tags`。点开作品详情时，网页会按真红小站的方式查 GGBase：先只用日文名（先全名，再连续一半，再随机四分之一）；日文全部落空时，改用英文名（罗马字/官方英文名）再搜一轮，命中规则是包含关系加 0.82 相似度。某一页的栏目少于 4 条时，这些栏目页和栏目上显示的名字都会列出，方便自行判断。结果更多时，只保留日文全名或一半能对上的，最多 3 个栏目页（`view.so?id=`）。这一步只在网页端，不进安卓包，也不返回磁力或压缩包地址。
 
 DeepSeek Key 可以写在页面上，也可以事先写进 `desktop/config.py` 或环境变量 `DEEPSEEK_API_KEY`。TouchGal Token 留空即可。端口和监听地址可用环境变量 `VNDB_WEB_PORT`、`VNDB_WEB_HOST` 改。
 
@@ -125,6 +126,23 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 安卓版把网页三页收进同一个 WebView，请求直接从手机发出，不依赖本机的 `web/server.py`。点结果卡片会加载鲲、TouchGal 和真红小站的参考页，再用系统浏览器打开。鲲使用公开接口，不需要 Token。
 
+## 百度网盘登录（baidu_cloud 包）
+
+`baidu_cloud/` 是为「vndb-searcher + 百度网盘分级评分捞取方案」准备的第一块基础：登录。整个方案的用途只有个人收藏保存，不商用、不传播。
+
+需要提供百度网盘登录信息时，程序会打开一个浏览器窗口让你本人登录：
+
+```powershell
+cd vndb-searcher
+python -m baidu_cloud.auth login
+```
+
+- 本机装了 playwright（`pip install playwright && playwright install chromium`）时：弹出真实浏览器窗口打开 pan.baidu.com，你手动扫码或输密码登录；脚本检测到登录成功（BDUSS）后自动保存凭据并关窗。
+- 没装 playwright 时：用系统默认浏览器打开登录页，你登录后按提示把 Cookie 行粘贴回终端，脚本解析出 BDUSS / STOKEN 保存。
+- 凭据保存在 `baidu_cloud/credentials.json`（已加入 .gitignore，不会提交），`status` 查看状态，`clear` 删除。
+
+后续的磁力离线、分享转存、容量查询模块都会从 `baidu_cloud.auth` 取 Cookie；这些模块尚未编写，属于方案里的阶段 2–5。
+
 ## 已知问题
 
 这些是目前看得到、以后可能踩到的问题，不是完整测试报告。
@@ -142,7 +160,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 - 网页进程里填写的 Key 和 TouchGal Token 会写进当前进程的配置，同一台机器上后一次请求会盖住前一次。
 - 安卓版的 API Key 放在应用私有存储里，是明文，没有额外加密。
 - 简介和标签翻译依赖 DeepSeek，可能漏译、缩短或措辞不稳。
-- 没有自动化测试。模式规则有过手工核对，但没有覆盖全部筛选组合。
+- 没有自动化测试覆盖三种模式的全部筛选组合。模式规则有过手工核对；`galsave`（收藏库流水线）那一套有 57 个单元测试。
 - 安卓打包脚本只在 Windows 上试过，而且依赖本机已安装的 SDK，不是 Gradle 工程。
 
 ## 可以怎么优化
@@ -156,7 +174,72 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 - 改成 Gradle / Android Studio 工程，方便别人编译和签名。
 - 给三种模式补一组固定夹具测试：错误的 10 分制评分、缺少标签、单核心、硬核 3.0 都要被本地改写或拒绝。
 - 作品详情可补上长度、开发状态等仍然属于公开元数据的字段。
-- GGBase 还没做。以后如果要加，也只做参考页入口，不要做压缩包、直链或磁力聚合。
+- GGBase 在网页版里只做「名字 → 站内搜索页」入口；`galsave` 里才做磁力链接解析，而且只写进本地收藏库。
+
+## 收藏库流水线（galsave）
+
+`galsave` 是仓库里独立的一条命令行流水线，和网页版、桌面版、安卓版互不影响。它做的事只有一件：从 VNDB 按评分从高到低取**官方原始语言是日语**（`olang=ja`）的作品，去三个资源站找对应资源，然后按资源类型用不同方式存进自己的百度网盘，把结果记进本地 SQLite，收满 4 TB 就停。
+
+前提说清楚：这是一个**个人收藏**工具，只保存、不商用、不传播、不上传任何公开链接。用到的都是各站公开页面，请自己遵守它们的许可和使用条款，也遵守你所在学校或运营商对校园网流量的规定。
+
+### 只取日语原版
+
+VNDB 的 `olang` 字段是「官方原始语言」。`galsave/vndb.py` 在 VNDB 查询里直接带 `["olang","=","ja"]`，拿回结果后再本地过一遍 `olang`，所以英语原版游戏（例如本来就用英语写的作品）不会被选进来。网页版、桌面版、安卓版也做了同样的过滤。
+
+### 三种资源来源
+
+| 来源 | 站点 | 怎么进网盘 | 占不占本地网络 |
+| --- | --- | --- | --- |
+| `magnet` | GGBase（镜像 `ggb.dlgal.com`） | 解析出磁力链接，交给百度网盘离线下载 | 不占（云端下载） |
+| `share` | 鲲 kungal | 抓分享链接，云端转存到自己网盘 | 不占（云端转存） |
+| `direct` | 真红 shinnku | 本地下载 → AES-GCM 加密 → 改名成 `.png` → 分片上传 | 占，按批配额 500 GB |
+
+`source_priority` 决定同一部作品优先试哪种来源。离线下载需要百度网盘 SVIP，普通账号会直接报「该操作需要百度网盘 SVIP（离线下载仅会员可用）」，不会静默失败。
+
+### 分级队列与停机
+
+`rating_buckets: [8.0, 7.5, 7.0, 6.5, 6.0]`：先从 8.0 分以上捞，捞完这一档再往下走一档，不会一上来就把 6 分档掺进来。累计入库达到 `max_total_gb: 4000` 就软停机：不再接新作品，把手上这一条做完。
+
+每次成功入库后都会重新读网盘里该目录的实际大小累加进 `done.size_gb`，同时写进 `runtime_meta`。启动时会用 `SELECT SUM(size_gb)` 兜底校准一次，所以手工删过网盘文件也不会算错。
+
+### 百度网盘登录
+
+需要登录信息的时候，程序会自己打开一个**真实浏览器窗口**让你本人登录（playwright，有头模式），检测到登录 Cookie 就自动保存到 `baidu_cloud/credentials.json`（已在 `.gitignore` 里，只存本机）。没装 playwright 时退化成「系统浏览器 + 粘贴 Cookie」。
+
+```bash
+python -m baidu_cloud.auth login     # 打开浏览器窗口登录
+python -m baidu_cloud.auth status    # 看当前是否已登录
+python -m baidu_cloud.auth clear     # 清掉本机凭据
+```
+
+### 命令
+
+```bash
+pip install -r requirements.txt
+
+python -m galsave selftest           # 本地自检，不联网
+python -m galsave status --quota     # 数据库统计 + 网盘容量
+python -m galsave plan --pages 3     # 各评分档还有多少部没捞
+python -m galsave dryrun "ランス10"  # 只搜不下载，看三站各命中什么
+python -m galsave run                # 正式跑
+python -m galsave run --buckets 8.0 7.5 --max-vns 20
+python -m galsave quota              # 只看 4TB / 500GB 配额
+python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载的加密文件
+```
+
+配置在仓库根的 `config.yaml`，本地覆盖可以建 `config.local.yaml`（已忽略），或者用 `GALSAVE_CONFIG` 指定别的文件、`GALSAVE_MAX_GB` / `GALSAVE_C_QUOTA_GB` / `GALSAVE_FUZZY` / `GALSAVE_PROXY` 临时改值。
+
+### 数据与测试
+
+- 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` 四张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。
+- 测试：`python -m unittest discover -s tests -t .`（57 项，全部离线夹具，不联网）。
+
+### 已知局限
+
+- 鲲的资源多为「合集」类条目，默认 `allow_collection: false` 会跳过，所以有些作品在鲲上捞不到本体。
+- 真红只有直链，走本地下载，受 500 GB/批 配额限制；合集区的直链主机和 ZD CDN 不一样，两种都支持。
+- GGBase 镜像的翻页参数无效（`p=0/1/2` 返回同一批），已按条目 ID 去重，但深层的早期资源搜不到。
+- 标题匹配用相似度（阈值 85），遇到「大戦国ランス / 戦国ランス」这种前缀只差一两个字的不同作品，靠规则压到阈值以下；极短的别名仍可能误命中，最终以 `dryrun` 的人工核对为准。
 
 ## 声明
 

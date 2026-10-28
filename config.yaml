@@ -1,0 +1,89 @@
+# galsave 分级评分捞取流水线配置
+# 只做个人收藏保存，不商用、不传播；所有资源都走用户自己的百度网盘账号。
+# 改完直接生效，不需要重启程序（每次运行重新读取）。
+
+# 分数优先级队列：从上到下依次捞取，高分优先，捞完不够量再降到下一档
+rating_buckets: [8.0, 7.5, 7.0, 6.5, 6.0]
+
+# 累计入库总容量上限（GB）。1TB = 1000GB，4000GB = 4TB
+max_total_gb: 4000
+
+# 单部作品的取源顺序：磁力离线 > 网盘转存 > 直链下载加密上传
+source_priority: [magnet, share, direct]
+
+# 校园网批次流量配额，只统计 C 源（直链下载）的流量
+c_quota_per_batch_gb: 500
+
+# 触达总容量上限后是否停止发起新任务（正在跑的任务是否强杀由下一项决定）
+stop_on_reach_limit: true
+kill_running_task_on_stop: false
+
+# 标题模糊匹配阈值（0-100，85 表示相似度达到 0.85 才算命中）
+fuzzy_match_threshold: 85
+
+# 单个来源最多重试次数
+max_retry: 3
+
+# 每部作品并发查询三个源的线程数
+concurrency_per_vn: 3
+
+# 直链下载单部作品的最小/最大体积（GB），避免把补丁或工具包当成游戏
+min_resource_gb: 0.3
+max_resource_gb: 60
+
+vndb:
+  base_url: https://api.vndb.org/kana
+  timeout: 30
+  page_size: 100
+  request_interval: 0.5
+  # 国内直连 api.vndb.org 通常需要代理；留空表示直连
+  proxy: ""
+
+crawler:
+  # ggbase 主站国内常被墙；默认先用可直连的镜像，失败再试主站
+  ggbase_bases:
+    - https://ggb.dlgal.com
+    - https://www.ggbases.com
+  kungal_base: https://www.kungal.com
+  shinnku_base: https://www.shinnku.com
+  timeout: 25
+  interval: 1.0
+  # 一次标题最多翻几页搜索结果
+  max_pages: 2
+  # 可选 HTTP 代理，例如 http://127.0.0.1:7890
+  proxy: ""
+  # 鲲的资源里是否允许“合集”类资源（默认不允许，避免一部游戏把整包合集算进来）
+  allow_collection: false
+
+baidu:
+  # 本程序托管的网盘根目录（只统计这里的资源，不看网盘总空间）
+  root_dir: /gal_save
+  offline_dir: /gal_save/_offline
+  share_dir: /gal_save/_share
+  encrypted_dir: /gal_save/_encrypted
+  # 分片上传大小（MB），百度网盘网页版用 4MB
+  upload_chunk_mb: 4
+  app_id: "250528"
+  # 转存/离线连续操作之间的间隔（秒），避免被风控
+  interval: 1.5
+  # 是否尝试磁力离线下载（需要 SVIP；非会员会自动落到 share/direct）
+  offline_enabled: true
+  # 离线任务最长等多久（小时），以及轮询间隔（秒）
+  offline_wait_hours: 6
+  poll_seconds: 20
+
+encrypt:
+  # C 路线（直链下载后）本地加密用的密码。换密码后旧文件必须用旧密码解。
+  # 建议改成自己的长密码，别用默认值。
+  password: "gal-save-change-me"
+  enabled: true
+
+run:
+  # 单次运行最多处理多少部作品（0 = 不限，配合 Ctrl+C 随时停）
+  max_vns: 0
+  # 连续失败多少部后自动停（0 = 不停），防止站点改版后空转
+  stop_after_consecutive_failures: 0
+
+paths:
+  db: galsave/data/task.db
+  log_dir: galsave/logs

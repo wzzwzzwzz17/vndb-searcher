@@ -7,6 +7,9 @@ venv/
 desktop/cache/
 favorites.json
 
+# 百度网盘登录凭据（仅本机保存，绝不提交）
+baidu_cloud/credentials.json
+
 android/out/
 android/build/
 android/*.apk
@@ -16,3 +19,8 @@ android/vndb-debug.keystore
 .idea/
 .vscode/
 *.log
+
+# galsave（收藏库流水线）的本地数据：数据库、日志、下载中间文件
+galsave/data/
+galsave/logs/
+config.local.yaml
