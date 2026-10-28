@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from baidu_cloud import BaiduClient, BaiduError, OfflineDownloader, ShareTransfer, Uploader
+from baidu_cloud.client import posix_name, posix_parent
 from baidu_cloud.offline import MAGNET_UNSUPPORTED, MAGNET_UNSUPPORTED_ERRNO
 from baidu_cloud.size import measure
 
@@ -203,10 +204,17 @@ class CloudSaver:
                 return SaveResult(False, "share", site,
                                   error=f"分享标题像课程/资料（{bait}），不是游戏本体，跳过",
                                   detail=link[:200])
-            result = transfer.transfer_into(link, folder, title=title, info=info)
+            demo = self._demo_name(info)
+            if demo:
+                return SaveResult(False, "share", site,
+                                  error=f"分享是试玩版（{demo}），不是完整游戏，跳过",
+                                  detail=link[:200])
+            result = transfer.transfer(link, folder, info=info)
+            result["cloud_path"] = folder
         except BaiduError as exc:
             self._remove_if_empty(folder)
             return SaveResult(False, "share", site, error=str(exc))
+        self._flatten(folder)
         cloud_path = str(result.get("cloud_path") or "")
         verdict = self.inspect_and_prune(cloud_path)
         if verdict is not None and not verdict.ok:
@@ -296,6 +304,16 @@ class CloudSaver:
                 return name[:40]
         return ""
 
+    def _demo_name(self, info: dict[str, Any]) -> str:
+        """整包都是试玩版时返回那个名字（有完整包混在一起时不动）。"""
+        from .prune import looks_like_demo
+
+        names = [str(it.get("server_filename") or "") for it in info.get("files") or []]
+        names = [n for n in names if n]
+        if names and all(looks_like_demo(n) for n in names):
+            return names[0][:40]
+        return ""
+
     def inspect_and_prune(self, folder: str) -> Any:
         """列一遍入库目录：不是游戏本体就整目录删掉；多平台包只留 PC。
 
@@ -327,6 +345,31 @@ class CloudSaver:
             return None
 
     # ---------- 清理 ----------
+    def _flatten(self, folder: str) -> None:
+        """分享自带的根目录会多套一层（`v123 名/v123 名/文件`），把唯一子目录提上来。"""
+        parent = posix_parent(folder)
+        name = posix_name(folder)
+        for _ in range(2):
+            try:
+                entries = self.client.list_dir(folder)
+            except BaiduError:
+                return
+            if len(entries) != 1 or not entries[0].get("isdir"):
+                return
+            child = str(entries[0].get("server_filename") or "")
+            if not child:
+                return
+            inner = f"{folder}/{child}"
+            aside = f"{folder} __flatten"
+            try:
+                self.client.move(folder, parent, posix_name(aside))
+                self.client.move(inner.replace(folder, aside, 1), parent, name)
+                self.client.delete([aside])
+                self.log.info("入库目录多套了一层，已提上来：%s", folder)
+            except BaiduError as exc:
+                self.log.warning("整理嵌套目录失败（先保留原样）：%s", exc)
+                return
+
     def _remove_if_empty(self, folder: str) -> None:
         """失败时别在网盘里留空目录。"""
         try:
@@ -349,10 +392,10 @@ class CloudSaver:
                 self.log.warning("清理本地文件失败 %s: %s", path, exc)
 
     def cleanup_tmp(self) -> int:
-        """清掉上次中断留下的临时文件。"""
+        """清掉上次中断留下的临时文件（`.part` 保留，下次还能续传）。"""
         removed = 0
         for path in self._downloader.tmp_dir.glob("*"):
-            if path.is_file():
+            if path.is_file() and not path.name.endswith(".part"):
                 try:
                     path.unlink()
                     removed += 1

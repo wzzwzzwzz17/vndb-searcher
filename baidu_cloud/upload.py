@@ -16,13 +16,36 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import os
+import time
 from pathlib import Path
 from typing import Any, Callable
 
-from .client import PCS, PAN, BaiduError, BaiduClient, posix_name
+from .client import APP_ID, PCS, PAN, BaiduError, BaiduClient, posix_name
 
 CHUNK_MB = 4
-MAX_CHUNKS_WITH_HASH = 1024  # 太大的文件不给每片算 MD5，省时间
+MAX_BLOCKS = 140  # block_list 要塞在 query 里，约 36 字符一个 MD5，超过 ~8KB 百度直接回 HTTP 414
+CHUNK_RETRIES = 3
+
+
+class _BoundedReader:
+    """把文件的一段当成流交给 requests，避免大分片整个读进内存。"""
+
+    def __init__(self, handle, length: int):
+        self._handle = handle
+        self._left = length
+
+    def read(self, size: int = -1) -> bytes:
+        if self._left <= 0:
+            return b""
+        if size is None or size < 0:
+            size = self._left
+        size = min(size, self._left)
+        data = self._handle.read(size)
+        self._left -= len(data)
+        return data
+
+    def __len__(self) -> int:
+        return self._left
 
 
 def chunk_md5s(path: str | Path, chunk_size: int) -> list[str]:
@@ -56,11 +79,22 @@ class Uploader:
         remote_dir = self.client.ensure_dir(remote_dir)
         remote_path = f"{remote_dir.rstrip('/')}/{posix_name(str(path))}"
 
-        chunks = max(1, (size + self.chunk_size - 1) // self.chunk_size)
-        block_list = chunk_md5s(path, self.chunk_size) if chunks <= MAX_CHUNKS_WITH_HASH else []
+        chunk_size = self.chunk_size
+        chunks = max(1, (size + chunk_size - 1) // chunk_size)
+        if chunks > MAX_BLOCKS:
+            # 分片太大塞不进 query，只能把分片调大。实测：
+            # block_list 在 query 里约 8KB 就 HTTP 414；放 body 则上传分片会被服务器掐断。
+            need = -(-size // MAX_BLOCKS)
+            chunk_size = -(-need // (1024 * 1024)) * (1024 * 1024)
+            chunks = max(1, (size + chunk_size - 1) // chunk_size)
+            self.log.info(
+                "文件 %.2fGB，分片调到 %dMB（%d 片，block_list 才不会过长）",
+                size / 1e9, chunk_size // (1024 * 1024), chunks,
+            )
+        block_list = chunk_md5s(path, chunk_size)
         upload_id, rapid = self._precreate(remote_path, size, block_list)
         if upload_id:
-            self._upload_chunks(path, remote_path, upload_id, chunks, progress)
+            self._upload_chunks(path, remote_path, upload_id, chunks, chunk_size, progress)
         elif not rapid:
             raise BaiduError(-1, "预上传没返回 uploadid，也不同意秒传", "百度上传")
         self._create(remote_path, size, upload_id, chunks, block_list)
@@ -89,13 +123,17 @@ class Uploader:
         return upload_id, int(data.get("return_type") or 0) == 1
 
     def _upload_chunks(self, path: Path, remote_path: str, upload_id: str, chunks: int,
+                       chunk_size: int,
                        progress: Callable[[int, int], None] | None) -> None:
         url = f"{PCS}/rest/2.0/pcs/superfile2"
+        mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         done = 0
         with open(path, "rb") as handle:
             for seq in range(chunks):
-                block = handle.read(self.chunk_size)
-                if not block:
+                offset = seq * chunk_size
+                handle.seek(offset)
+                length = min(chunk_size, path.stat().st_size - offset)
+                if length <= 0:
                     break
                 params = {
                     "method": "upload",
@@ -103,32 +141,39 @@ class Uploader:
                     "path": remote_path,
                     "uploadid": upload_id,
                     "partseq": str(seq),
-                    "app_id": "250528",
+                    "app_id": APP_ID,
                 }
-                files = {
-                    "file": (
-                        "blob",
-                        block,
-                        mimetypes.guess_type(str(path))[0] or "application/octet-stream",
-                    )
-                }
-                resp = self.client.session.post(
-                    url, params=params, files=files, timeout=max(self.client.timeout, 120)
-                )
-                if resp.status_code != 200:
-                    raise BaiduError(-1, f"分片 {seq} 上传失败 HTTP {resp.status_code}", "百度上传")
-                try:
-                    data = resp.json()
-                except ValueError:
-                    data = {}
-                if data.get("errno") not in (None, 0, "0"):
-                    raise BaiduError(data.get("errno"), f"第 {seq} 片上传失败", "百度上传")
+                last_error: Exception | None = None
+                for attempt in range(1, CHUNK_RETRIES + 1):
+                    handle.seek(offset)
+                    files = {"file": ("blob", _BoundedReader(handle, length), mime)}
+                    try:
+                        resp = _post_chunk(self.client, url, params, files, attempt)
+                    except Exception as exc:  # noqa: BLE001 - 传输层什么都可能抛
+                        last_error = exc
+                        self.log.warning("第 %d 片第 %d 次上传中断：%s", seq, attempt, exc)
+                        time.sleep(min(30, 2 * attempt))
+                        continue
+                    if resp.status_code != 200:
+                        last_error = BaiduError(-1, f"分片 {seq} 上传失败 HTTP {resp.status_code}", "百度上传")
+                        time.sleep(2 * attempt)
+                        continue
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        data = {}
+                    if data.get("errno") not in (None, 0, "0"):
+                        last_error = BaiduError(data.get("errno"), f"第 {seq} 片上传失败", "百度上传")
+                        time.sleep(2 * attempt)
+                        continue
+                    last_error = None
+                    break
+                if last_error is not None:
+                    raise last_error if isinstance(last_error, BaiduError) else BaiduError(
+                        -1, f"第 {seq} 片上传失败：{last_error}", "百度上传")
                 done += 1
                 if progress:
                     progress(done, chunks)
-                if seq == 0 and not data.get("md5"):
-                    # 有些账号返回里没有 md5，不影响后续合并
-                    pass
 
     def _create(self, remote_path: str, size: int, upload_id: str, chunks: int,
                 block_list: list[str]) -> None:
@@ -171,6 +216,49 @@ def _dump(items: list[str]) -> str:
     import json
 
     return json.dumps(items)
+
+
+def _loose_ssl_session(client: BaiduClient) -> "requests.Session":
+    """降一级 TLS 安全等级的会话。
+
+    实测 d.pcs.baidu.com 个别节点用的是 1024 位 RSA 证书，Python 3.13+ 的默认
+    安全等级会直接回 `EE certificate key too weak`。证书链照样校验，只是允许弱密钥。
+    """
+    import ssl
+
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.poolmanager import PoolManager
+
+    class Adapter(HTTPAdapter):
+        def init_poolmanager(self, connections: int, maxsize: int, block: bool = False, **kw: Any) -> None:
+            ctx = ssl.create_default_context()
+            try:
+                ctx.set_ciphers("DEFAULT@SECLEVEL=1")
+            except ssl.SSLError:  # pragma: no cover - 取决于本机 OpenSSL
+                pass
+            self.poolmanager = PoolManager(
+                num_pools=connections, maxsize=maxsize, block=block,
+                ssl_context=ctx, **kw,
+            )
+
+    session = requests.Session()
+    session.trust_env = client.session.trust_env
+    session.headers.update(client.session.headers)
+    session.cookies.update(client.session.cookies)
+    session.mount("https://", Adapter())
+    return session
+
+
+def _post_chunk(client: BaiduClient, url: str, params: dict, files: dict, attempt: int):
+    """上传一个分片；第 2 次以后换一个新的宽松 TLS 会话再试。"""
+    if attempt <= 1:
+        return client.session.post(url, params=params, files=files, timeout=max(client.timeout, 120))
+    session = _loose_ssl_session(client)
+    try:
+        return session.post(url, params=params, files=files, timeout=max(client.timeout, 120))
+    finally:
+        session.close()
 
 
 def _parent(remote_path: str) -> str:

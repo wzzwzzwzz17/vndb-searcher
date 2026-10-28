@@ -76,6 +76,9 @@ class FakeTransfer:
             {"fs_id": 1, "server_filename": "a.rar", "isdir": 0, "size": self.size_bytes},
         ]}
 
+    def transfer(self, link: str, save_dir: str, info: dict | None = None) -> dict:
+        return {"path": save_dir, "files": ["a.rar"], "size_bytes": self.size_bytes}
+
     def transfer_into(self, link: str, root_dir: str, title: str, info: dict | None = None) -> dict:
         return {"cloud_path": f"{root_dir}/{title}", "files": ["a.rar"],
                 "size_bytes": self.size_bytes}
@@ -103,6 +106,7 @@ class FakeClient:
     def __init__(self) -> None:
         self.dirs: list[str] = []
         self.deleted: list[list[str]] = []
+        self.moved: list[tuple[str, str, str]] = []
         # 入库体检会列目录：默认给一个像样的游戏压缩包
         self.files: list[dict] = [{"server_filename": "game.rar", "isdir": 0, "size": 7_460_000_000}]
 
@@ -115,6 +119,10 @@ class FakeClient:
 
     def list_dir(self, remote_dir: str, page: int = 1, num: int = 1000) -> list[dict]:
         return list(self.files)
+
+    def move(self, remote_path: str, dest_dir: str, new_name: str = "") -> bool:
+        self.moved.append((remote_path, dest_dir, new_name))
+        return True
 
     def delete(self, paths) -> bool:
         self.deleted.append(list(paths))
@@ -191,6 +199,41 @@ class CloudSaverRouteTest(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.route, SOURCE_SHARE)
         self.assertIn("ランス10", result.cloud_path)
+
+    def test_share_transfer_does_not_nest_folder_twice(self) -> None:
+        # 曾经把标题又拼在目录后面，网盘里变成 v123 名/v123 名/文件
+        folder = "/gal_save/v3144 素晴らしき日々～不連続存在～"
+        result = self.saver.save_share("https://pan.baidu.com/s/1abc?pwd=t7cp", folder,
+                                       "素晴らしき日々～不連続存在～", "kungal")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.cloud_path, folder)
+
+    def test_flatten_promotes_single_subdir(self) -> None:
+        folder = "/gal_save/v1 名"
+
+        class Tree(FakeClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.tree = {folder: [{"server_filename": "名", "isdir": 1}],
+                             "/gal_save": [],
+                             f"{folder}/名": [{"server_filename": "a.zip", "isdir": 0, "size": 10}]}
+
+            def list_dir(self, remote_dir: str, page: int = 1, num: int = 1000) -> list[dict]:
+                return list(self.tree.get(remote_dir, []))
+
+            def move(self, remote_path: str, dest_dir: str, new_name: str = "") -> bool:
+                self.moved.append((remote_path, dest_dir, new_name))
+                if remote_path in self.tree:  # 挪走之后源目录就不在了
+                    moved = self.tree.pop(remote_path)
+                    self.tree[f"{dest_dir}/{new_name}"] = moved
+                return True
+
+        client = Tree()
+        self.saver._client = client
+        self.saver._flatten(folder)
+        self.assertEqual(client.moved[0], (folder, "/gal_save", "v1 名 __flatten"))
+        self.assertEqual(client.moved[1], (f"{folder} __flatten/名", "/gal_save", "v1 名"))
+        self.assertEqual(client.deleted[-1], [f"{folder} __flatten"])
 
     def test_folder_uses_vndb_id_and_preferred_name(self) -> None:
         # 用户要求：一部作品一个目录，名字带 vndb 编号 + 日文原名
@@ -276,7 +319,7 @@ class CloudSaverRouteTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("不是游戏本体", result.error)
         # 诱饵目录要整棵删掉，别占着 4TB 的额度
-        self.assertIn(["/gal_save/v1 千恋＊万花/千恋＊万花"], self.saver._client.deleted)
+        self.assertIn(["/gal_save/v1 千恋＊万花"], self.saver._client.deleted)
 
     def test_multiplatform_share_keeps_only_pc(self) -> None:
         def listing(remote_dir: str, page: int = 1, num: int = 1000) -> list[dict]:
@@ -295,7 +338,7 @@ class CloudSaverRouteTest(unittest.TestCase):
         self.saver._client.list_dir = listing
         result = self.saver.save_share("https://pan.baidu.com/s/1multi?pwd=y", "/gal_save/v1 x", "x")
         self.assertTrue(result.ok, result.error)
-        self.assertIn(["/gal_save/v1 x/x/安卓直装"], self.saver._client.deleted)
+        self.assertIn(["/gal_save/v1 x/安卓直装"], self.saver._client.deleted)
 
     def test_small_share_is_not_pruned(self) -> None:
         self.saver._client.files = [{"server_filename": "game.rar", "isdir": 0, "size": 2_000_000_000}]
@@ -308,6 +351,20 @@ class CloudSaverRouteTest(unittest.TestCase):
         self.saver._client.files = [{"server_filename": "a.mp4", "isdir": 0, "size": 9_000_000_000}]
         result = self.saver.save_share("https://pan.baidu.com/s/1off?pwd=w", "/gal_save/v3 z", "z")
         self.assertTrue(result.ok, result.error)
+
+    def test_demo_only_share_skipped(self) -> None:
+        class DemoTransfer(FakeTransfer):
+            def parse(self, link: str) -> dict:
+                return {"shareid": "1", "share_uk": "2", "files": [
+                    {"fs_id": 1, "server_filename": "春ノ雪SAKURAdemo.iso", "isdir": 0, "size": 598_000_000},
+                ]}
+
+        with mock.patch.object(cloud_mod, "ShareTransfer", DemoTransfer):
+            result = self.saver.save_share(
+                "https://pan.baidu.com/s/1demo?pwd=d", "/gal_save/v562 サクラノ詩", "サクラノ詩")
+        self.assertFalse(result.ok)
+        self.assertIn("试玩版", result.error)
+        self.assertEqual(self.saver._client.dirs, [])  # 连目录都不该建
 
     def test_course_titled_share_skipped(self) -> None:
         class CourseTransfer(FakeTransfer):

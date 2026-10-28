@@ -67,9 +67,15 @@ class DirectDownloader:
         filename: str,
         referer: str = "",
         progress: Callable[[int, int], None] | None = None,
-        retries: int = 3,
+        retries: int = 8,
     ) -> Path:
-        """下到 tmp_dir/filename，返回本地路径。已存在同名文件则续传。"""
+        """下到 tmp_dir/filename，返回本地路径。
+
+        实测 zd/galgamedownload 这类 CDN 传大文件时经常中途断流
+        （`Connection broken: IncompleteRead`），所以每一轮都从 `.part` 已有字节
+        用 Range 续传；服务器忽略 Range（回 200）时才从头重来。断了不算失败，
+        已下载的字节不作废：只要还有进展就继续重试，连续两轮零进展才放弃。
+        """
         if not url:
             raise DownloadError("直链为空")
         target = self.tmp_dir / safe_filename(filename)
@@ -77,34 +83,44 @@ class DirectDownloader:
 
         self._check_space(target)
 
-        headers = {"Referer": referer} if referer else {}
+        base_headers = {"Referer": referer} if referer else {}
         last_error: Exception | None = None
-        for attempt in range(1, max(1, retries) + 1):
-            existing = part.stat().st_size if part.exists() else 0
-            start = existing
-            # 先问服务器支不支持续传
-            head = self.session.head(url, timeout=self.timeout, headers=headers, allow_redirects=True)
-            total = int(head.headers.get("Content-Length") or 0)
-            accepts_range = head.headers.get("Accept-Ranges", "").lower() == "bytes"
-            if existing and total and existing >= total:
-                part.replace(target)
-                return target
-            if existing and not accepts_range:
-                part.unlink(missing_ok=True)
-                existing = 0
-                start = 0
-            if existing:
-                headers["Range"] = f"bytes={existing}-"
-
+        total = 0
+        attempt = 0
+        stalled = 0
+        while attempt < max(1, retries):
+            attempt += 1
+            before = part.stat().st_size if part.exists() else 0
+            headers = dict(base_headers)
+            if before:
+                headers["Range"] = f"bytes={before}-"
             try:
                 with self.session.get(url, headers=headers, stream=True, timeout=self.timeout) as resp:
+                    if resp.status_code == 416 and before:
+                        # Range 越界：要么已经下完，要么 .part 是坏的
+                        if total and before >= total:
+                            part.replace(target)
+                            return target
+                        part.unlink(missing_ok=True)
+                        raise DownloadError("续传位置越界，重新下载")
                     if resp.status_code not in (200, 206):
                         raise DownloadError(f"HTTP {resp.status_code}")
-                    if resp.status_code == 200 and existing:
-                        # 服务器忽略了 Range，只能重下
+                    if resp.status_code == 206:
+                        start = before
+                        content_range = resp.headers.get("Content-Range") or ""
+                        if "/" in content_range:
+                            try:
+                                total = int(content_range.rsplit("/", 1)[-1])
+                            except ValueError:
+                                pass
+                        if not total:
+                            total = start + int(resp.headers.get("Content-Length") or 0)
+                    else:
                         start = 0
-                    mode = "ab" if start else "wb"
-                    with open(part, mode) as handle:
+                        total = int(resp.headers.get("Content-Length") or 0)
+                        if before:
+                            self.log.debug("服务器不支持续传，从头下载")
+                    with open(part, "ab" if start else "wb") as handle:
                         for chunk in resp.iter_content(CHUNK):
                             if not chunk:
                                 continue
@@ -112,17 +128,25 @@ class DirectDownloader:
                             start += len(chunk)
                             if progress:
                                 progress(start, total or start)
-                expected = total or start
-                if expected and start < expected:
-                    raise DownloadError(f"下载不完整: {start}/{expected}")
+                got = part.stat().st_size if part.exists() else 0
+                if total and got < total:
+                    raise DownloadError(f"下载不完整: {got}/{total}")
                 part.replace(target)
                 return target
-            except (requests.RequestException, DownloadError) as exc:
+            except (requests.RequestException, DownloadError, OSError) as exc:
                 last_error = exc
-                self.log.warning("直链下载第 %d 次失败: %s", attempt, exc)
+                kept = part.stat().st_size if part.exists() else 0
+                stalled = 0 if kept > before else stalled + 1
+                self.log.warning(
+                    "直链下载第 %d 次中断（已存 %.0fMB，下次续传）: %s",
+                    attempt, kept / 1e6, exc,
+                )
+                if stalled >= 2:
+                    self.log.error("连续两轮没有任何新数据，先放弃（.part 保留，下次接着下）")
+                    break
                 time.sleep(min(20, 3 * attempt))
 
-        raise DownloadError(f"直链下载失败: {last_error}")
+        raise DownloadError(f"直链下载失败（.part 已保留，下次可续传）: {last_error}")
 
     def _check_space(self, target: Path) -> None:
         free_gb = shutil.disk_usage(target.parent).free / GB_BYTES

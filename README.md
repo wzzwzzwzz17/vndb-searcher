@@ -228,9 +228,22 @@ VNDB 的 `olang` 字段是「官方原始语言」。`galsave/vndb.py` 在 VNDB 
 
 鲲的资源条目还有个坑：条目标注的体积（比如 7.46 GB）和它给的百度链接**没关系**，很多条目给的其实是「模拟器 + 解压工具」那个公共分享（实测只有几个 APK）。真正的下载地址要单独调一次 `POST /api/v1/galgame-resources/{resource_id}/downloads`（不需要登录，返回 `download_urls` 和 `extraction_code`，GET 同一个路径回 405），页面上的「获取链接」按钮走的就是这个接口。所以现在搜索阶段只产出候选，等到真要转存时才 `resolve_share()` 去取真链接。
 
-`save_share` 在转存前还会先解析 `file_list` 累加真实体积，小于 `min_resource_gb`（0.3 GB）就判定「不是游戏本体」直接跳过，不浪费转存。条目自带 `state` 字段，`expired` 的分享也会提前跳过。
+`save_share` 在转存前还会先解析 `file_list` 累加真实体积，小于 `min_resource_gb`（0.3 GB）就判定「不是游戏本体」直接跳过，不浪费转存。条目自带 `state` 字段，`expired` 的分享也会提前跳过。整包都是试玩版（`demo` / `体験版` / `trial`）的也跳过——`春ノ雪SAKURAdemo.iso` 这种不是要收藏的完整游戏。
 
-**关于上传（实测结论）**：`/api/precreate` 必须带 `autoinit=1` 才会返回 `uploadid`（不带只有 `return_type=1` 的秒传标记）；`/api/create?a=commit` 的 `block_list` 要用真实的分片 MD5，填空串会回一个极误导的 `errno -7「该文件所在的文件夹命名不符合要求」`。另外本地文件名要先统一成正斜杠再取 basename，否则 Windows 本机路径整串会被当成文件名传上去，也是 `-7`。
+**关于上传（实测结论）**：`/api/precreate` 必须带 `autoinit=1` 才会返回 `uploadid`（不带只有 `return_type=1` 的秒传标记）；`/api/create?a=commit` 的 `block_list` 要用真实的分片 MD5，填空串会回 `errno 2 参数错误`（早期版本还会被误报成 `-7「该文件所在的文件夹命名不符合要求」`）。另外本地文件名要先统一成正斜杠再取 basename，否则 Windows 本机路径整串会被当成文件名传上去，也是 `-7`。
+
+分片这块有三条实测出来的坑：
+1. `block_list` **只能放 query**。放 body（不管其余参数怎么摆）时 `precreate` 照样返回 `uploadid`，但接着传分片会在 30MB 上下被服务器掐断连接——双向都复现。
+2. 放 query 就有 URL 长度上限：100 个 MD5（约 3.6KB）能过，220 个（7.9KB）就开始 `HTTP 414 URI Too Long`。所以 `MAX_BLOCKS = 140`，文件一大就自动把分片调大（`ceil(大小/140)`），而不是硬塞更多分片；分片内容用 `_BoundedReader` 流式上传，不会把一整个大分片读进内存。
+3. `d.pcs.baidu.com` 个别节点用的是弱密钥证书，Python 3.13+ 会直接拒：`EE certificate key too weak`。重试时换一个把 OpenSSL 安全等级降到 `SECLEVEL=1` 的会话（证书链照样校验），单分片失败最多重试 3 次。
+
+600MB 真机上传（自动放大到 5MB×120 片）已跑通，`verify` 大小一致。
+
+**关于直链（实测结论）**：`zd.shinnku.top` / `galgamedownload.date` 传几 GB 的文件时经常中途断流（`Connection broken: IncompleteRead`），而且**不支持一次传完**。所以下载改成 `.part` + `Range` 续传：断开就带着已有字节重连，服务器忽略 Range（回 200）时才从头来；只要还在长就继续重试，连续两轮零进展才放弃，`.part` 留着下次接着下（`cleanup_tmp` 也不会删 `.part`）。
+
+**关于建目录（实测结论）**：`/api/create?a=commit` 对**已经存在**的目录不报错，而是又建一个 `同名_20261028_143012` 的兄弟目录（真的这么干）。所以 `ensure_dir()` 每级都先列父目录确认存在性再建，否则每跑一部作品云端就多几个带时间戳的空目录。
+
+转存还有个细节：分享自带的根目录会让网盘里多套一层（`v123 名/v123 名/文件`），转存完会检查「目录里只有一个子目录」就把子目录提上来，保持一部作品一个平铺目录；`done.cloud_path` 记的永远是 `v<编号> <日文名>` 这一层。
 
 ### 分级队列与停机
 
@@ -288,7 +301,7 @@ python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载
 ### 数据与测试
 
 - 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` / `magnet_pending` / `bad_link` 六张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。
-- 测试：`python -m unittest discover -s tests -t .`（138 项，全部离线夹具，不联网）；`python -m galsave selftest` 是 19 项纯本地自检。
+- 测试：`python -m unittest discover -s tests -t .`（159 项，全部离线夹具，不联网）；`python -m galsave selftest` 是 19 项纯本地自检。
 
 ### 已知局限
 

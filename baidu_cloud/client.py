@@ -296,12 +296,28 @@ class BaiduClient:
         raise BaiduError(errno, str(data.get("error_msg") or ""), f"建目录 {remote_dir}")
 
     def ensure_dir(self, remote_dir: str) -> str:
-        """逐级创建目录。"""
+        """逐级创建目录（已存在的不碰）。
+
+        坑：`/api/create` 对**已存在**的目录不报 errno 12，而是乖乖再建一个
+        `同名_20261028_143012` 的兄弟目录（实测），所以每级都必须先查再建。
+        """
         parts = [p for p in str(remote_dir or "/").split("/") if p]
         current = ""
+        listings: dict[str, set[str]] = {}
         for part in parts:
+            parent = current or "/"
             current = f"{current}/{part}"
+            names = listings.get(parent)
+            if names is None:
+                try:
+                    names = {str(it.get("server_filename")) for it in self.list_dir(parent)}
+                except BaiduError:
+                    names = set()
+                listings[parent] = names
+            if part in names:
+                continue
             self.mkdir(current)
+            names.add(part)
         return "/" if not parts else current
 
     def delete(self, remote_paths: list[str]) -> bool:

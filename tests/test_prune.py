@@ -11,6 +11,7 @@ from galsave.prune import (
     check_game_like,
     classify_name,
     looks_like_bait,
+    looks_like_demo,
     make_entries,
     plan_prune,
     walk_cloud,
@@ -57,15 +58,29 @@ class BaitTest(unittest.TestCase):
             "2026真实U3D脚本拆解实践班直播第19讲",
             "2026高等数学核心考点精讲第CABF讲",
             "2026中学物理实践班直播第185讲",
+            "2026软件工程案例分析课第BIHD讲",
+            "2026C++零基础入门实践班直播第145讲",
             "考研数学冲刺资料",
+            "第19讲 课后作业",
         ):
             with self.subTest(name=name):
                 self.assertTrue(looks_like_bait(name))
 
     def test_game_names_are_not_bait(self) -> None:
-        for name in ("千恋＊万花", "001千恋万花丛中笑", "（珠帘）千恋万花", "Se ren Ba ka", "02"):
+        for name in ("千恋＊万花", "001千恋万花丛中笑", "（珠帘）千恋万花", "Se ren Ba ka", "02",
+                     "CLANNAD", "【PC】千恋万花 汉化硬盘版"):
             with self.subTest(name=name):
                 self.assertFalse(looks_like_bait(name))
+
+    def test_demo_names_are_demo(self) -> None:
+        for name in ("春ノ雪SAKURAdemo.iso", "xxx体験版.zip", "Some Game Trial.rar"):
+            with self.subTest(name=name):
+                self.assertTrue(looks_like_demo(name))
+
+    def test_full_game_is_not_demo(self) -> None:
+        for name in ("サクラノ詩－櫻の森の上を舞う－", "千恋万花 汉化硬盘版"):
+            with self.subTest(name=name):
+                self.assertFalse(looks_like_demo(name))
 
 
 class GameLikeTest(unittest.TestCase):

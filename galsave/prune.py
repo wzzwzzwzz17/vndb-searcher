@@ -44,14 +44,27 @@ _PC_CJK = ("硬盘", "免安装", "绿色", "汉化", "汉化版", "pc版", "win
 # 诱饵分享的典型标题：拿课程/资料冒充游戏（实测「2026真实U3D脚本拆解实践班直播第19讲」这类）
 BAIT_WORDS = (
     "直播", "考点", "精讲", "实践班", "课程", "考研", "高考", "四六级", "学习须知",
-    "汇编", "拆解", "脚本班", "u3d", "unity教程", "编程实战",
+    "汇编", "拆解", "脚本班", "u3d", "unity教程", "编程实战", "编程", "零基础",
+    "入门", "进阶", "训练营", "案例分析", "教程", "网课", "课件",
 )
+
+# 「第19讲」「第145讲」「第BIHD讲」这种，课程直播页的标志
+_BAIT_LESSON = re.compile(r"第\s*[0-9a-zA-Z]{1,6}\s*讲")
+
+# 试玩版/体验版不是要收藏的完整游戏
+DEMO_WORDS = ("demo", "体験版", "体验版", "trial")
 
 
 def looks_like_bait(name: str) -> bool:
     """标题一看就是课程/资料分享，不是游戏。"""
     text = str(name or "").lower()
-    return any(word in text for word in BAIT_WORDS)
+    return any(word in text for word in BAIT_WORDS) or bool(_BAIT_LESSON.search(text))
+
+
+def looks_like_demo(name: str) -> bool:
+    """试玩版/体验版（不是完整游戏）。"""
+    text = str(name or "").lower()
+    return any(word in text for word in DEMO_WORDS)
 
 
 def classify_name(name: str) -> str:

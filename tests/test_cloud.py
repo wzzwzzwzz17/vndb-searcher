@@ -155,5 +155,41 @@ class ClientHelperTest(unittest.TestCase):
                 self.assertTrue(cred.exists())
 
 
+class EnsureDirTest(unittest.TestCase):
+    """`/api/create` 对已存在的目录会再造一个「同名_时间戳」的兄弟目录（实测），
+    所以 ensure_dir 每一级都必须先查再建。"""
+
+    def _client(self) -> BaiduClient:
+        class Fake(BaiduClient):
+            def __init__(self) -> None:
+                super().__init__(cookies={})
+                self.tree: dict[str, set[str]] = {"/": {"gal_save"}, "/gal_save": {"v1 名"}}
+                self.made: list[str] = []
+
+            def list_dir(self, remote_dir: str, page: int = 1, num: int = 1000) -> list[dict]:
+                return [{"server_filename": n, "isdir": 1}
+                        for n in sorted(self.tree.get(remote_dir, set()))]
+
+            def mkdir(self, remote_dir: str) -> bool:
+                self.made.append(remote_dir)
+                parent = posix_parent(remote_dir)
+                self.tree.setdefault(parent, set()).add(posix_name(remote_dir))
+                self.tree.setdefault(remote_dir, set())
+                return True
+
+        return Fake()
+
+    def test_existing_levels_are_not_recreated(self) -> None:
+        client = self._client()
+        self.assertEqual(client.ensure_dir("/gal_save/v1 名/sub"), "/gal_save/v1 名/sub")
+        self.assertEqual(client.made, ["/gal_save/v1 名/sub"])
+
+    def test_ensure_dir_twice_creates_nothing_new(self) -> None:
+        client = self._client()
+        client.ensure_dir("/gal_save/v1 名")
+        client.ensure_dir("/gal_save/v1 名")
+        self.assertEqual(client.made, [])
+
+
 if __name__ == "__main__":
     unittest.main()
