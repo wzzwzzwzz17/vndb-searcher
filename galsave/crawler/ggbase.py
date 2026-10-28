@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html as html_mod
 import re
+import time
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -145,27 +146,29 @@ class GgbaseCrawler(BaseCrawler):
             raise CrawlerError(f"ggbase 磁力页没找到 downid: {magnet_page}")
 
         url = f"{self.base}/magnet.so?downid={downid}&json=1&id={vid}"
-        resp = self.session.post(
-            url,
-            headers={
-                "Referer": magnet_page,
-                "X-Requested-With": "XMLHttpRequest",
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-            },
-            timeout=self.timeout,
-            proxies=self.proxies,
-        )
-        if resp.status_code != 200:
-            raise CrawlerError(f"ggbase 取磁力失败 HTTP {resp.status_code}")
-        try:
-            data = resp.json()
-        except ValueError:
-            # 少数情况下返回的是磁力文本本身
-            text = resp.text.strip()
-            match = re.search(r"btih:([0-9a-fA-F]{32,40})", text)
-            if not match:
-                raise CrawlerError("ggbase 磁力接口返回无法解析")
-            data = {"hash": match.group(1)}
+        data: dict[str, Any] = {}
+        for attempt in range(1, 3):
+            self._throttle()
+            resp = self.session.post(
+                url,
+                headers={
+                    "Referer": magnet_page,
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                },
+                timeout=self.timeout,
+                proxies=self.proxies,
+            )
+            if resp.status_code != 200:
+                raise CrawlerError(f"ggbase 取磁力失败 HTTP {resp.status_code}")
+            data = self._magnet_payload(resp)
+            if data:
+                break
+            # 连点太快时接口会回一坨空 HTML，等一会儿再试一次
+            if attempt == 1:
+                time.sleep(2)
+        if not data:
+            raise CrawlerError("ggbase 磁力接口返回无法解析")
 
         hash_value = str(data.get("hash") or data.get("magnet") or "").strip()
         if not hash_value:
@@ -173,6 +176,22 @@ class GgbaseCrawler(BaseCrawler):
         magnet = hash_value if hash_value.startswith("magnet:") else f"magnet:?xt=urn:btih:{hash_value}"
         res.link = magnet
         return magnet
+
+    @staticmethod
+    def _magnet_payload(resp: Any) -> dict[str, Any]:
+        """从磁力接口的响应里挖出 hash；两种写法都见得到。"""
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and (data.get("hash") or data.get("magnet")):
+            return data
+        text = resp.text or ""
+        match = re.search(r'"(?:hash|magnet)"\s*:\s*"([0-9a-fA-F]{32,40}|magnet:[^"]+)"', text)
+        if match:
+            return {"hash": match.group(1)}
+        match = re.search(r"btih:([0-9a-fA-F]{32,40})", text)
+        return {"hash": match.group(1)} if match else {}
 
     @staticmethod
     def _find_downid(page: str) -> str:

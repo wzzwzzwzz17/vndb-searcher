@@ -154,10 +154,18 @@ class KungalCrawler(BaseCrawler):
             if match:
                 pwd = match.group(1)
             resource_id = str(item.get("id") or "")
+            display = str(work.get("display_name") or "")
+            # 条目自己没写标题时就直接用作品名，别拼成「千恋＊万花 [千恋＊万花]」
+            if not display or display in title:
+                full_title = title
+            elif not title:
+                full_title = display
+            else:
+                full_title = f"{title} [{display}]"
             out.append(Resource(
                 site=self.site,
                 source_type=SOURCE_SHARE,
-                title=f"{title} [{work.get('display_name') or ''}]".strip(),
+                title=full_title.strip(),
                 link=link,
                 size_gb=parse_size_gb(str(item.get("size") or "")),
                 detail_url=(f"{self.base}/galgame/resource/{resource_id}" if resource_id
