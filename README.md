@@ -160,7 +160,7 @@ python -m baidu_cloud.auth login
 - 网页进程里填写的 Key 和 TouchGal Token 会写进当前进程的配置，同一台机器上后一次请求会盖住前一次。
 - 安卓版的 API Key 放在应用私有存储里，是明文，没有额外加密。
 - 简介和标签翻译依赖 DeepSeek，可能漏译、缩短或措辞不稳。
-- 没有自动化测试覆盖三种模式的全部筛选组合。模式规则有过手工核对；`galsave`（收藏库流水线）那一套有 109 个单元测试。
+- 没有自动化测试覆盖三种模式的全部筛选组合。模式规则有过手工核对；`galsave`（收藏库流水线）那一套有 112 个单元测试。
 - 安卓打包脚本只在 Windows 上试过，而且依赖本机已安装的 SDK，不是 Gradle 工程。
 
 ## 可以怎么优化
@@ -212,7 +212,11 @@ VNDB 的 `olang` 字段是「官方原始语言」。`galsave/vndb.py` 在 VNDB 
 
 ### 磁力交给本机 aria2
 
-`baidu.magnet_local: true` 时，GGBase 的磁力优先交本机 `aria2c` 下载（`aria2_path` 留空就在 PATH 里找，也可以用 `winget install aria2.aria2` 安装），下完打成一个包再走「加密 → 改名 `.png` → 分片上传」。磁力下载同样算本地流量，所以也吃 `c_quota_per_batch_gb` 那 500 GB。本机没有 aria2 时自动退回「只登记到待处理磁力清单」。
+`baidu.magnet_local: true` 时，GGBase 的磁力优先交本机 `aria2c` 下载（`winget install --id aria2.aria2 -e --source winget` 装一个即可，也可以用 `aria2_path` 指定路径），下完打成一个包再走「加密 → 改名 `.png` → 分片上传」。磁力下载同样算本地流量，所以也吃 `c_quota_per_batch_gb` 那 500 GB。本机没有 aria2 时自动退回「只登记到待处理磁力清单」。
+
+自动找的范围包括 PATH、winget 包目录（`%LOCALAPPDATA%\Microsoft\WinGet\...`）、Chocolatey（`C:\ProgramData\chocolatey\bin`）、`C:\Program Files\aria2` 和 scoop —— winget 装完当前终端往往还没刷新 `PATH`，所以程序自己会去这几个地方看一眼。`python -m galsave status` 里有一行「磁力下载」会直接告诉你找到的是哪个版本、或者为什么用不了。
+
+实测 aria2 下完（即使带 `--seed-time=0`）有时不肯退出，会一直挂着占住流水线。所以下载过程带看门狗：每 5 秒看一眼临时目录的字数，`aria2_stall_seconds`（默认 300 秒）内没有新数据就判断——没有 `.aria2` 控制文件说明文件已经下完，直接收工去加密上传；还有控制文件说明没下完，按失败处理并登记到磁力清单。
 
 **关于磁力离线（实测结论）**：`POST /rest/2.0/services/cloud_dl?method=add_task` 对磁力（`type=4`）一律返回 `{"error_code":36001,"error_msg":"param error"}`，换磁力、换 `type`、换 `app_id`/`clienttype`、加 `select`/`dn` 都无效；同样参数换成 http 直链（`type=1`）立刻成功，说明不是凭据或会员的问题，而是**百度网盘已不再为个人账号提供 BT/磁力离线**（离线只剩 http/ftp）。SVIP 账号的会员权益里仍然写着「离线下载套餐」，但磁力任务进不去。
 
@@ -271,7 +275,7 @@ python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载
 ### 数据与测试
 
 - 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` / `magnet_pending` 五张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。
-- 测试：`python -m unittest discover -s tests -t .`（109 项，全部离线夹具，不联网）；`python -m galsave selftest` 是 18 项纯本地自检。
+- 测试：`python -m unittest discover -s tests -t .`（112 项，全部离线夹具，不联网）；`python -m galsave selftest` 是 18 项纯本地自检。
 
 ### 已知局限
 

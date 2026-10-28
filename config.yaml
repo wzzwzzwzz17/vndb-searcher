@@ -68,12 +68,14 @@ baidu:
   interval: 1.5
   # 百度网盘已不接受磁力离线（实测 36001），磁力改用本机 aria2 下载再加密上传
   magnet_local: true
-  # aria2c 可执行文件路径，留空则自动在 PATH 里找
+  # aria2c 可执行文件路径，留空则自动在 PATH / winget / Chocolatey 目录里找
   aria2_path: ""
   aria2_args: []
   aria2_seed_time: 0
   # 单个磁力最多下多久（秒），默认 6 小时
   aria2_timeout_seconds: 21600
+  # aria2 下完经常不肯退出；超过这么久没有新数据就收工（还有 .aria2 控制文件则算没下完）
+  aria2_stall_seconds: 300
   # 是否还尝试网盘离线下载（现在只对 http/ftp 直链有效）
   offline_enabled: true
   # 离线任务最长等多久（小时），以及轮询间隔（秒）

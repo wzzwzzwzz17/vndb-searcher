@@ -60,6 +60,8 @@ DEFAULTS: dict[str, Any] = {
         "aria2_args": [],
         "aria2_seed_time": 0,
         "aria2_timeout_seconds": 21600,
+        # aria2 下完经常不肯退出，超过这么久没有新数据就当收工（有 .aria2 控制文件则算失败）
+        "aria2_stall_seconds": 300,
         "offline_enabled": True,
         "offline_wait_hours": 6.0,
         "poll_seconds": 20.0,

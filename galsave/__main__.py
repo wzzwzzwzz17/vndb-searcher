@@ -69,6 +69,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"待处理磁力: {stats['pending_magnet']} 条（网盘不接受磁力离线，用 python -m galsave magnets 导出）")
     print(f"C 源本批 : {stats['c_quota_gb']:.2f}GB / {float(cfg.get('c_quota_per_batch_gb') or 0):.0f}GB")
 
+    from .downloader.torrent import Aria2Downloader
+
+    magnet_ok, magnet_why = Aria2Downloader(cfg).available()
+    if magnet_ok:
+        print(f"磁力下载 : {magnet_why}（GGBase 磁力会先下到本地再加密上传）")
+    else:
+        print(f"磁力下载 : 不可用（{magnet_why}）")
+
     if not auth.is_logged_in():
         print("网盘登录 : 未登录（执行 python -m galsave login）")
         return 1

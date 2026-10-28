@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -92,6 +93,55 @@ class Aria2DownloaderTest(unittest.TestCase):
         # 原始文件打包后要删掉，别占磁盘
         self.assertFalse(a.exists())
         self.assertFalse(b.exists())
+
+
+class Aria2WatchdogTest(unittest.TestCase):
+    """aria2 下完不肯退出的情况（实测会挂住），看门狗要能收工。"""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmpdir.name)
+        self.cfg = load_config()
+        self.cfg["baidu"]["aria2_path"] = str(self.root / "no-such-aria2c")
+        self.cfg["baidu"]["aria2_stall_seconds"] = 2
+
+    def tearDown(self) -> None:
+        self.tmpdir.cleanup()
+
+    def _runner(self, writes: str) -> list[str]:
+        script = (
+            "import pathlib, time\n"
+            f"target = pathlib.Path(r'{self.root / 'work' / 'game.iso'}')\n"
+            f"{writes}\n"
+            "time.sleep(600)\n"
+        )
+        return [sys.executable, "-c", script]
+
+    def test_returns_when_files_complete_but_process_hangs(self) -> None:
+        import time
+
+        work = self.root / "work"
+        work.mkdir()
+        dl = Aria2Downloader(self.cfg, tmp_dir=self.root / "tmp")
+        started = time.time()
+        code = dl._run_aria2(self._runner("target.write_bytes(b'x' * 4096)"), work)
+        self.assertEqual(code, 0)
+        self.assertLess(time.time() - started, 60)
+        self.assertEqual((work / "game.iso").stat().st_size, 4096)
+
+    def test_gives_up_when_nothing_downloaded(self) -> None:
+        work = self.root / "work"
+        work.mkdir()
+        dl = Aria2Downloader(self.cfg, tmp_dir=self.root / "tmp")
+        code = dl._run_aria2(self._runner("pass"), work)
+        self.assertEqual(code, 1)
+
+    def test_gives_up_when_leftovers_are_incomplete(self) -> None:
+        work = self.root / "work"
+        work.mkdir()
+        dl = Aria2Downloader(self.cfg, tmp_dir=self.root / "tmp")
+        script = self._runner("target.write_bytes(b'x'); (target.parent / 'game.iso.aria2').write_bytes(b'c')")
+        self.assertEqual(dl._run_aria2(script, work), 1)
 
 
 if __name__ == "__main__":
