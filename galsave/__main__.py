@@ -335,6 +335,22 @@ def cmd_adopt(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_badlinks(args: argparse.Namespace) -> int:
+    """查看/清理拉黑的分享（误把伪装包当诱饵时用 --clear）。"""
+    cfg = _bootstrap(args)
+    db = TaskDB(cpath(cfg, "paths.db"))
+    if args.clear:
+        n = db.clear_bad_links(only_content=not args.all)
+        print(f"已清除 {n} 条拉黑"
+              + ("（保留「分享已失效」）" if not args.all else "（全部）"))
+        return 0
+    rows = db.bad_links(limit=args.limit or 50)
+    print(f"拉黑 {db.count_bad_links()} 条（显示 {len(rows)}）")
+    for row in rows:
+        print(f"  {row.get('reason')}  |  {(row.get('link') or '')[:80]}")
+    return 0
+
+
 def cmd_passwords(args: argparse.Namespace) -> int:
     """转存入库的解压码：导出到工作区根目录文档。"""
     cfg = _bootstrap(args)
@@ -559,6 +575,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_pw = sub.add_parser("passwords", help="转存入库的解压码一览（导出成工作区根目录文档）")
     p_pw.add_argument("--limit", type=int, default=0, help="只看最近 N 条")
     p_pw.set_defaults(func=cmd_passwords)
+
+    p_bad = sub.add_parser("badlinks", help="查看/清理拉黑的分享（伪装包误判用 --clear）")
+    p_bad.add_argument("--clear", action="store_true", help="清除误伤拉黑（默认保留「分享已失效」）")
+    p_bad.add_argument("--all", action="store_true", help="与 --clear 合用：连失效链接一并清")
+    p_bad.add_argument("--limit", type=int, default=50, help="列出条数")
+    p_bad.set_defaults(func=cmd_badlinks)
 
     p_cat = sub.add_parser("catalog", help="已收录台账（导出文档；抓取按 vndb_id 去重）")
     p_cat.set_defaults(func=cmd_catalog)

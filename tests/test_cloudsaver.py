@@ -119,6 +119,9 @@ class FakeClient:
         self.dirs.append(remote_dir)
         return remote_dir
 
+    def exists(self, remote_path: str) -> bool:
+        return remote_path in self.dirs
+
     def list_dir(self, remote_dir: str, page: int = 1, num: int = 1000) -> list[dict]:
         return list(self.files)
 
@@ -363,8 +366,10 @@ class CloudSaverRouteTest(unittest.TestCase):
         result = self.saver.save_share("https://pan.baidu.com/s/1junk?pwd=x", "/gal_save/v1 千恋＊万花", "千恋＊万花")
         self.assertFalse(result.ok)
         self.assertIn("不是游戏本体", result.error)
-        # 诱饵目录要整棵删掉，别占着 4TB 的额度
-        self.assertIn(["/gal_save/v1 千恋＊万花"], self.saver._client.deleted)
+        # 只删本次转存的临时目录，正式目录（已入库的东西）一律不动
+        deleted = [p for group in self.saver._client.deleted for p in group]
+        self.assertTrue(any(p.startswith("/gal_save/_incoming/") for p in deleted), deleted)
+        self.assertNotIn("/gal_save/v1 千恋＊万花", deleted)
 
     def test_multiplatform_share_keeps_only_pc(self) -> None:
         def listing(remote_dir: str, page: int = 1, num: int = 1000) -> list[dict]:
@@ -383,7 +388,7 @@ class CloudSaverRouteTest(unittest.TestCase):
         self.saver._client.list_dir = listing
         result = self.saver.save_share("https://pan.baidu.com/s/1multi?pwd=y", "/gal_save/v1 x", "x")
         self.assertTrue(result.ok, result.error)
-        self.assertIn(["/gal_save/v1 x/安卓直装"], self.saver._client.deleted)
+        self.assertIn(["/gal_save/_incoming/v1 x/安卓直装"], self.saver._client.deleted)
 
     def test_small_share_is_not_pruned(self) -> None:
         self.saver._client.files = [{"server_filename": "game.rar", "isdir": 0, "size": 2_000_000_000}]
@@ -411,7 +416,9 @@ class CloudSaverRouteTest(unittest.TestCase):
         self.assertIn("试玩版", result.error)
         self.assertEqual(self.saver._client.dirs, [])  # 连目录都不该建
 
-    def test_course_titled_share_skipped(self) -> None:
+    def test_course_titled_share_is_judged_by_content(self) -> None:
+        # 外层叫「…实践班直播第19讲」不代表整包没用：真游戏有时就藏在课程名下，
+        # 所以只看目录名不够（只告警），最终由最底层文件判定。
         class CourseTransfer(FakeTransfer):
             def parse(self, link: str) -> dict:
                 return {"shareid": "1", "share_uk": "2", "files": [
@@ -422,8 +429,8 @@ class CloudSaverRouteTest(unittest.TestCase):
         with mock.patch.object(cloud_mod, "ShareTransfer", CourseTransfer):
             result = self.saver.save_share(
                 "https://pan.baidu.com/s/1course?pwd=q", "/gal_save/v9 x", "千恋＊万花")
-        self.assertFalse(result.ok)
-        self.assertIn("课程/资料", result.error)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.cloud_path, "/gal_save/v9 x")
 
     def test_size_out_of_range_rejected(self) -> None:
         res = Resource(site="ggbase", source_type=SOURCE_MAGNET, title="x",

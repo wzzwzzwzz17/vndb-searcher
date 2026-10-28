@@ -146,6 +146,36 @@ class Scheduler:
                 handled += 1
         return handled
 
+    # ---------- 台账核对 ----------
+    def reconcile(self) -> int:
+        """done 里登记了、网盘里却没有的目录，退回重捞（防止台账与云端长期不一致）。"""
+        try:
+            client = self.saver.client
+        except Exception as exc:  # noqa: BLE001 - 核对该失败不影响主流程
+            self.log.warning("核对台账失败（跳过）：%s", exc)
+            return 0
+        fixed = 0
+        for row in self.db.all_done():
+            path = str(row.get("cloud_path") or "")
+            if not path:
+                continue
+            try:
+                if client.exists(path):
+                    continue
+            except Exception as exc:  # noqa: BLE001
+                self.log.warning("核对 %s 失败：%s", path, exc)
+                continue
+            self.db.forget_done(str(row.get("vndb_id")))
+            self.db.add_retry(str(row.get("vndb_id")), str(row.get("source_type") or "share"),
+                              str(row.get("site") or ""), "云端目录不见了，重新捞取")
+            self.log.warning("台账纠正：%s 的目录 %s 已不在网盘，重新排队", row.get("vndb_id"), path)
+            fixed += 1
+        if fixed:
+            self.db.recompute_total()
+            self.log.info("台账纠正完成：%d 部退回待捞（已入库 %d 部 / %.2fGB）",
+                          fixed, self.db.count_done(), self.total_gb())
+        return fixed
+
     # ---------- 主流程 ----------
     def run(self, buckets: list[float] | None = None, max_vns: int | None = None,
             skip_retries: bool = False, max_minutes: float | None = None) -> dict[str, Any]:
@@ -167,6 +197,7 @@ class Scheduler:
             raise SystemExit("没有百度网盘登录态，无法入库。先执行: python -m baidu_cloud.auth login")
         if self.saver.cleanup_tmp():
             self.log.info("清理了上次残留的临时文件")
+        self.reconcile()
 
         if not skip_retries:
             if self.run_retries():
@@ -310,9 +341,9 @@ class Scheduler:
                 continue
 
             if res.link and self.db.is_bad_link(res.link):
-                self.log.info("  跳过已知是诱饵/空壳的分享（%s）", res.site)
+                self.log.info("  跳过已确认失效/非游戏的分享（%s）", res.site)
                 self.stats["skipped"] += 1
-                notes.append(f"{res.site} 是已知诱饵")
+                notes.append(f"{res.site} 已拉黑")
                 continue
 
             projected = self.total_gb() + float(res.size_gb or 0)

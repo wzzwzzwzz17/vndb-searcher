@@ -66,6 +66,8 @@ class CloudSaver:
         prune_cfg = cfg.get("prune") or {}
         self.prune_enabled = bool(prune_cfg.get("enabled", True))
         self.prune_threshold_gb = float(prune_cfg.get("threshold_gb") or 4.0)
+        # 转存先落临时目录：体检通过的才并进正式目录，避免诱饵分享混进已入库的目录
+        self.stage_dir = str(bcfg.get("stage_dir") or f"{self.root_dir.rstrip('/')}/_incoming")
 
         enc = cfg.get("encrypt") or {}
         self.encrypt_enabled = bool(enc.get("enabled", True))
@@ -113,6 +115,28 @@ class CloudSaver:
         if not re.match(r"^[vV]\d", folder):
             folder = f"v{raw} {folder}"
         return f"{self.root_dir.rstrip('/')}/{_safe(folder, 90)}"
+
+    def stage_for(self, folder: str) -> str:
+        """转存用的临时目录（同一部件名）：确认真是游戏本体后才并进正式目录。"""
+        return f"{self.stage_dir.rstrip('/')}/{posix_name(folder)}"
+
+    def _commit_stage(self, stage: str, folder: str) -> None:
+        """把体检通过的临时目录并进正式目录；正式目录已存在就逐项搬进去。"""
+        parent = posix_parent(folder)
+        try:
+            self.client.ensure_dir(parent)
+            if not self.client.exists(folder):
+                self.client.move(stage, parent, posix_name(folder))
+                return
+            for item in self.client.list_dir(stage) or []:
+                name = str(item.get("server_filename") or "")
+                if name:
+                    self.client.move(f"{stage}/{name}", folder, name)
+            if self.client.exists(stage):
+                self.client.delete([stage])
+        except BaiduError as exc:
+            self.log.warning("并入库目录失败（内容还在 %s）：%s", stage, exc)
+            raise
 
     def save(self, res: Resource, vndb_id: str = "", name: str = "") -> SaveResult:
         """按资源类型分派到对应路线。`name` 是 VNDB 的日文原名（没有才用英文）。"""
@@ -201,10 +225,8 @@ class CloudSaver:
                                   detail=link[:200])
             bait = self._bait_name(info)
             if bait:
-                self.db.add_bad_link(link, "标题像课程/资料")
-                return SaveResult(False, "share", site,
-                                  error=f"分享标题像课程/资料（{bait}），不是游戏本体，跳过",
-                                  detail=link[:200])
+                # 外层常伪装成课程名，最底层才是游戏——先转存，入库后交给 AI/启发式看最底层
+                self.log.warning("分享根名像伪装外层（%s），仍转存，稍后按最底层文件判断", bait)
             demo = self._demo_name(info)
             if demo:
                 return SaveResult(False, "share", site,
@@ -219,31 +241,44 @@ class CloudSaver:
                 return SaveResult(False, "share", site,
                                   error=f"分享内容不是游戏本体（{early}），跳过",
                                   detail=link[:200])
-            result = transfer.transfer(link, folder, info=info)
-            result["cloud_path"] = folder
+            # 先转存到临时目录：万一整包是课程/视频诱饵，删的只是临时目录，
+            # 绝不会碰到已经入库的正式目录（曾经把正式目录当转存目标，结果诱饵把
+            # 已入库的 4.58GB 一起带走了）
+            stage = self.stage_for(folder)
+            if self.client.exists(stage):
+                self.client.delete([stage])
+            self.client.ensure_dir(self.stage_dir)
+            result = transfer.transfer(link, stage, info=info)
+            result["cloud_path"] = stage
         except BaiduError as exc:
-            self._remove_if_empty(folder)
+            self._remove_if_empty(self.stage_for(folder))
             # 31066 = 分享里没有可转存的文件（实测大量失效/空壳分享都回这个），
             # -9 / 105 = 链接失效。记进 bad_link，下次直接跳过，别每小时重复探测
             if exc.errno in (31066, -9, 105):
                 self.db.add_bad_link(link, f"分享已失效（{exc.errno}）")
             return SaveResult(False, "share", site, error=str(exc))
-        self._flatten(folder)
-        cloud_path = str(result.get("cloud_path") or "")
-        verdict = self.inspect_and_prune(cloud_path)
+        stage = str(result.get("cloud_path") or stage)
+        self._flatten(stage)
+        verdict = self.inspect_and_prune(stage, title=title, allow_delete=True)
         if verdict is not None and not verdict.ok:
-            self.db.add_bad_link(link, verdict.reason)
-            return SaveResult(False, "share", site, cloud_path=cloud_path,
+            # 只有 AI/启发式确认「不是游戏」才拉黑；失效类除外已在上面处理
+            self.db.add_bad_link(link, f"非游戏本体：{verdict.reason}")
+            return SaveResult(False, "share", site, cloud_path=stage,
                               error=f"分享内容不是游戏本体（{verdict.reason}），已删除并跳过",
                               detail=link[:200])
-        size_gb = measure(self.client, cloud_path)
+        size_gb = measure(self.client, stage)
         if size_gb <= 0:
             # 列表接口偶尔有延迟：退回用分享页里各文件的 size 求和
             size_gb = round(int(result.get("size_bytes") or 0) / (1000 ** 3), 3)
         if size_gb <= 0:
-            self._remove_if_empty(folder)
-            return SaveResult(False, "share", site, cloud_path=cloud_path, error="转存成功但量不到体积")
-        return SaveResult(True, "share", site, cloud_path=cloud_path, size_gb=size_gb,
+            self._remove_if_empty(stage)
+            return SaveResult(False, "share", site, cloud_path=stage, error="转存成功但量不到体积")
+        try:
+            self._commit_stage(stage, folder)
+        except BaiduError as exc:
+            return SaveResult(False, "share", site, cloud_path=stage,
+                              error=f"并入库目录失败: {exc}", size_gb=size_gb)
+        return SaveResult(True, "share", site, cloud_path=folder, size_gb=size_gb,
                           detail=",".join(result.get("files") or [])[:200])
 
     # ---------- C：直链 → 加密上传 ----------
@@ -373,34 +408,82 @@ class CloudSaver:
 
         只在「根目录全是文件（没有子目录）」时判断：有子目录时分享页给不出
         子树体积，判了容易误杀（例如分卷包放在 `10/` 里那种）。
+        根层若全是 .mp4 / 带 PC 标签的假大包，直接拒绝，别浪费转存。
         """
-        from .prune import check_game_like, make_entries
+        from .prune import check_game_like, is_disguise_file, make_entries
 
         files = list(info.get("files") or [])
-        if not files or any(int(it.get("isdir") or 0) for it in files):
+        if not files:
             return ""
-        report = check_game_like(make_entries(files))
+        entries = make_entries(files)
+        flat = [e for e in entries if not e.isdir]
+        if flat and all(is_disguise_file(e) for e in flat):
+            return "根目录全是伪装（.mp4 或带PC标签的假大包）"
+        if any(int(it.get("isdir") or 0) for it in files):
+            return ""
+        report = check_game_like(entries)
         return "" if report.ok else report.reason
 
-    def inspect_and_prune(self, folder: str) -> Any:
-        """列一遍入库目录：不是游戏本体就整目录删掉；多平台包只留 PC。
+    def inspect_and_prune(self, folder: str, title: str = "", allow_delete: bool = True) -> Any:
+        """列一遍入库目录：AI+规则看最底层——伪装外层里找游戏本体；多平台只留 PC。
 
-        返回 `prune.Report`（`ok=False` 表示已经删掉），异常时返回 `None`（不影响主流程）。
+        返回 `prune.Report`（`ok=False` 表示不是游戏本体）。只有 `allow_delete=True`
+        （即目录是本次转存的临时目录）才会真的删；正式目录一律不删。
         """
         if not self.prune_enabled or not folder:
             return None
         try:
-            from .prune import apply_report, plan_prune, walk_cloud
+            from .inspect_ai import judge_tree, merge_ai_drops
+            from .prune import apply_report, is_disguise_file, plan_prune, walk_cloud
 
             entries = walk_cloud(self.client, folder)
             report = plan_prune(entries, threshold_gb=self.prune_threshold_gb)
+            # 硬规则：mp4 / 假PC大包一律进删除名单（AI 也不能把它们当本体留下）
+            hard_disguise = [e for e in entries if not e.isdir and is_disguise_file(e)]
+            ai = judge_tree(self.cfg, title or folder, entries)
+
+            if ai is not None:
+                if not ai.is_game:
+                    report.ok = False
+                    report.reason = ai.reason or "AI 判定最底层不是游戏本体（伪装/课件）"
+                    self.log.warning("入库体检(AI)：%s（%s）", report.reason, folder)
+                    if allow_delete:
+                        self.client.delete([folder])
+                    return report
+                # AI 认为是游戏：即使启发式曾判失败，也改口保留（须仍有非伪装游戏包）
+                has_real = any(
+                    (not e.isdir) and (e.is_archive) and not is_disguise_file(e) for e in entries
+                )
+                if not report.ok and has_real:
+                    self.log.info("启发式曾判非游戏，AI 看最底层后改判为游戏：%s", ai.reason)
+                    report.ok = True
+                    report.reason = ai.reason or "AI 确认最底层是游戏本体"
+                ai_drops = merge_ai_drops(entries, ai)
+                # 合并：AI drop ∪ 硬规则伪装
+                by_rel = {e.rel: e for e in (report.drop + ai_drops + hard_disguise)}
+                merged = list(by_rel.values())
+                if merged:
+                    report.drop = merged
+                    report.drop_bytes = sum(
+                        e.size for e in entries
+                        if any(e.rel == c.rel or e.rel.startswith(c.rel + "/") for c in merged)
+                    )
+            elif hard_disguise and report.ok:
+                by_rel = {e.rel: e for e in (report.drop + hard_disguise)}
+                report.drop = list(by_rel.values())
+                report.drop_bytes = sum(
+                    e.size for e in entries
+                    if any(e.rel == c.rel or e.rel.startswith(c.rel + "/") for c in report.drop)
+                )
+
             if not report.ok:
                 self.log.warning("入库体检：%s（%s）", report.summary(), folder)
-                self.client.delete([folder])
+                if allow_delete:
+                    self.client.delete([folder])
                 return report
             if report.drop:
                 removed = apply_report(self.client, folder, report)
-                self.log.info("入库体检：%s → 删掉 %d 项 %.2fGB 的非 PC 内容",
+                self.log.info("入库体检：%s → 删掉 %d 项 %.2fGB 的非 PC/伪装内容",
                               report.summary(), removed, report.drop_gb)
             for note in report.warnings:
                 self.log.warning("入库体检：%s", note)

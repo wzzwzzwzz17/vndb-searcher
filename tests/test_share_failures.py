@@ -116,7 +116,8 @@ class PrecheckTest(unittest.TestCase):
 
     def test_video_only_share_is_rejected_before_transfer(self) -> None:
         info = {"files": [{"server_filename": "1.mp4", "isdir": 0, "size": 35_000_000_000}]}
-        self.assertIn("视频/文档", self.saver._precheck_share(info))
+        reason = self.saver._precheck_share(info)
+        self.assertTrue("视频/文档" in reason or "伪装" in reason, reason)
 
     def test_real_game_passes(self) -> None:
         info = {"files": [{"server_filename": "game.rar", "isdir": 0, "size": 4_000_000_000}]}

@@ -37,6 +37,8 @@ prune:
   enabled: true
   # 单部超过这个体积就当成多平台合集，只保留 PC 端文件（安卓/iOS/KRKR/Tyranor 全删）
   threshold_gb: 4
+  # 转存后 DeepSeek 看最底层：伪装外层里找游戏本体 + 只留 PC
+  ai_inspect: true
 
 vndb:
   base_url: https://api.vndb.org/kana

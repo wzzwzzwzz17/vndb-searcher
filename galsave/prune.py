@@ -20,18 +20,25 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Iterable
 
-# 游戏本体常见的可执行/镜像/压缩包扩展名
+# 游戏本体常见的可执行/镜像/压缩包扩展名（不含音视频——带【PC】的大 mp4 是伪装）
 GAME_EXTS = {
     ".exe", ".msi", ".iso", ".mdf", ".mds", ".bin", ".cue", ".img", ".nrg",
     ".rar", ".zip", ".7z", ".tar", ".gz", ".bz2", ".xz", ".lzh",
     ".xp3", ".pck", ".arc", ".pak", ".cpk", ".dat", ".sfb", ".fpk", ".int",
-    ".vpk", ".wav", ".ogg", ".mp3", ".wmv",
+    ".vpk",
 }
-# 明显不是游戏本体的东西
-VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".flv", ".rmvb", ".rm", ".webm", ".ts", ".m4v", ".mov"}
+# 明显不是游戏本体的东西（.mp4 一律当伪装）
+VIDEO_EXTS = {
+    ".mp4", ".mkv", ".avi", ".flv", ".rmvb", ".rm", ".webm", ".ts", ".m4v", ".mov",
+    ".wmv", ".mpg", ".mpeg", ".m2ts",
+}
 DOC_EXTS = {".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".txt", ".csv", ".chm"}
+AUDIO_EXTS = {".wav", ".ogg", ".mp3", ".flac", ".aac", ".m4a"}
 # 手机安装包：分享里只有这些说明不是 PC 版（实测 Muv-Luv 那条 2.6GB 就一个 .apk）
 MOBILE_EXTS = {".apk", ".xapk", ".ipa", ".obb", ".aab"}
+# 用户规则：名称带 pc、体积明显 >1GB、却不是压缩包/镜像 → 伪装
+DISGUISE_MIN_BYTES = 1_000_000_000  # 1GB（十进制）
+_PC_LABEL = re.compile(r"(?:【\s*)?pc(?:\s*】)?|电脑版?|windows|win版|硬盘版", re.I)
 
 # 分卷压缩包的后缀不是 .7z 而是 .7z.001 / .part1.rar / .r00 / .z01
 # 实测 Rance Ⅹ 的汉化版就是 Rance10_CN.7z.001~.004，早期版本当成"未知格式"误删了
@@ -83,6 +90,36 @@ def looks_like_demo(name: str) -> bool:
     """试玩版/体验版（不是完整游戏）。"""
     text = str(name or "").lower()
     return any(word in text for word in DEMO_WORDS)
+
+
+def name_has_pc_label(name: str) -> bool:
+    """文件名里是否故意打了 PC/电脑 标签（伪装大包常用）。"""
+    return bool(_PC_LABEL.search(str(name or "")))
+
+
+def is_disguise_file(entry: "Entry") -> bool:
+    """硬规则识别伪装文件（不要当游戏本体）。
+
+    用户约定：
+    - `.mp4` 等视频一律伪装；
+    - 明显 >1GB 且名称带 pc/电脑，却不是 iso/rar/7z/exe 等游戏包 → 伪装；
+    真游戏压缩包/镜像即使 >1GB、带 PC 也不算伪装。
+    """
+    if entry.isdir:
+        return False
+    suf = entry.suffix
+    if suf in VIDEO_EXTS:
+        return True
+    if suf in DOC_EXTS or suf in AUDIO_EXTS:
+        # 单独的文档/音轨不当地基；大体积+PC 标签的再往下判
+        if entry.size >= DISGUISE_MIN_BYTES and name_has_pc_label(entry.name):
+            return True
+        return False
+    if entry.size >= DISGUISE_MIN_BYTES and name_has_pc_label(entry.name):
+        if suf in GAME_EXTS or is_archive_segment(entry.name):
+            return False
+        return True
+    return False
 
 
 def classify_name(name: str) -> str:
@@ -185,45 +222,58 @@ def make_entries(items: Iterable[dict[str, Any]], prefix: str = "") -> list[Entr
 
 
 def check_game_like(entries: Iterable[Entry]) -> Report:
-    """按字节占比判断这批文件是不是游戏本体。"""
+    """按字节占比判断这批文件是不是游戏本体（伪装 mp4/假 PC 大包不计入游戏）。"""
     files = [e for e in entries if not e.isdir]
+    disguise = [e for e in files if is_disguise_file(e)]
+    real = [e for e in files if not is_disguise_file(e)]
     total = sum(e.size for e in files)
-    game = sum(e.size for e in files if e.is_archive)
-    junk = sum(e.size for e in files if e.suffix in VIDEO_EXTS or e.suffix in DOC_EXTS)
+    game = sum(e.size for e in real if e.is_archive or e.suffix in GAME_EXTS)
+    junk = sum(e.size for e in disguise) + sum(
+        e.size for e in real if e.suffix in DOC_EXTS or e.suffix in AUDIO_EXTS
+    )
     rep = Report(ok=False, reason="", total_gb=total / 1e9, game_gb=game / 1e9, junk_gb=junk / 1e9,
                  entries=list(entries))
     if total <= 0:
         rep.reason = "分享是空的（没有文件）"
+        return rep
+    if disguise and game == 0:
+        # 典型：全是【PC】xxx.mp4 大视频
+        rep.reason = f"只有伪装文件（如 .mp4 / 带PC标签的大包），没有游戏本体"
         return rep
     if game == 0 and junk == 0:
         mobile = sum(e.size for e in files if e.suffix in MOBILE_EXTS)
         if mobile and mobile == total:
             rep.reason = "只有安卓/iOS 安装包，不是 PC 版"
             return rep
-    if game > 0 and game / total >= 0.3:
+    # 占比按「非伪装体积」算，避免 9GB mp4 把 2GB iso 比例压垮
+    real_total = sum(e.size for e in real) or total
+    if game > 0 and game / real_total >= 0.3:
         rep.ok = True
-        rep.reason = f"游戏文件占 {game / total:.0%}"
+        rep.reason = f"游戏文件占真实文件 {game / real_total:.0%}"
         return rep
     if game == 0 and junk == 0:
         rep.reason = "没认出任何游戏文件（可能是分卷/未知格式）"
         return rep
-    if junk / total >= 0.5:
-        rep.reason = f"视频/文档占 {junk / total:.0%}，没有游戏本体"
+    if junk / total >= 0.5 and game == 0:
+        rep.reason = f"视频/伪装/文档占 {junk / total:.0%}，没有游戏本体"
         return rep
-    rep.reason = f"游戏文件只占 {game / total:.0%}，无法确认是游戏"
+    if game == 0:
+        rep.reason = "没有可确认的游戏压缩包/镜像"
+        return rep
+    rep.reason = f"游戏文件只占 {game / real_total:.0%}，无法确认是游戏"
     return rep
 
 
 def plan_prune(entries: Iterable[Entry], threshold_gb: float = 4.0) -> Report:
-    """多平台包只留 PC：返回要删的子树。"""
+    """删伪装（mp4 / 假 PC 大包）+ 多平台包只留 PC。"""
     entries = list(entries)
     base = check_game_like(entries)
     rep = Report(ok=base.ok, reason=base.reason, total_gb=base.total_gb, game_gb=base.game_gb,
                  junk_gb=base.junk_gb, entries=entries)
+    # 无论是否过阈值：伪装文件一律进删除名单（真本体留下）
+    disguise = [e for e in entries if not e.isdir and is_disguise_file(e)]
     if not rep.ok:
-        return rep
-    if rep.total_gb <= threshold_gb:
-        rep.reason = f"{rep.total_gb:.2f}GB 没超过 {threshold_gb:g}GB，不剪裁"
+        # 整包都是伪装/非游戏：交给上层删目录，这里不单拆文件
         return rep
 
     tops = [e for e in entries if e.depth == 1]
@@ -236,24 +286,30 @@ def plan_prune(entries: Iterable[Entry], threshold_gb: float = 4.0) -> Report:
         return any(e.isdir and e.depth > 1 and e.rel.startswith(rel + "/") and classify_name(e.name) == "pc"
                    for e in entries)
 
-    candidates: list[Entry] = []
-    for top in tops:
-        kind = classify_name(top.name)
-        if not top.isdir:
-            if kind in ("android", "ios") and top.suffix in {".apk", ".xapk", ".ipa", ".obb"}:
-                candidates.append(top)
-            continue
-        if kind in ("android", "ios"):
-            # 目录名说是安卓/iOS，但里面还有 PC 分类的子目录 -> 不整棵删，交给下一层
-            if deeper_has_pc(top.rel):
+    candidates: list[Entry] = list(disguise)
+    # 超过阈值才剪多平台；伪装文件上面已无条件加入
+    if rep.total_gb > threshold_gb:
+        for top in tops:
+            kind = classify_name(top.name)
+            if not top.isdir:
+                if kind in ("android", "ios") and top.suffix in {".apk", ".xapk", ".ipa", ".obb"}:
+                    candidates.append(top)
                 continue
-            candidates.append(top)
-        elif kind == "mixed":
-            # 【PC+安卓】这种在同一层分目录的，往下找
-            for sub in [e for e in entries if e.isdir and e.depth == 2 and e.rel.startswith(top.name + "/")]:
-                sub_kind = classify_name(sub.name)
-                if sub_kind in ("android", "ios") and not deeper_has_pc(sub.rel):
-                    candidates.append(sub)
+            if kind in ("android", "ios"):
+                # 目录名说是安卓/iOS，但里面还有 PC 分类的子目录 -> 不整棵删，交给下一层
+                if deeper_has_pc(top.rel):
+                    continue
+                candidates.append(top)
+            elif kind == "mixed":
+                # 【PC+安卓】这种在同一层分目录的，往下找
+                for sub in [e for e in entries if e.isdir and e.depth == 2 and e.rel.startswith(top.name + "/")]:
+                    sub_kind = classify_name(sub.name)
+                    if sub_kind in ("android", "ios") and not deeper_has_pc(sub.rel):
+                        candidates.append(sub)
+    elif disguise:
+        rep.reason = f"未超 {threshold_gb:g}GB，仍删除 {len(disguise)} 个伪装文件（mp4/假PC大包）"
+    else:
+        rep.reason = f"{rep.total_gb:.2f}GB 没超过 {threshold_gb:g}GB，不剪裁多平台"
 
     # 去重：被祖先覆盖的子树只删祖先
     picked: list[Entry] = []
@@ -264,19 +320,26 @@ def plan_prune(entries: Iterable[Entry], threshold_gb: float = 4.0) -> Report:
 
     rep.drop = picked
     rep.drop_bytes = sum(e.size for e in entries if any(e.rel == c.rel or e.rel.startswith(c.rel + "/") for c in picked))
-    pc_left = any(
-        classify_name(e.name) in ("pc", "other") and e.rel not in {c.rel for c in picked}
+    # 删完伪装/安卓后还得剩游戏本体
+    remain_game = any(
+        (not e.isdir) and (e.is_archive or e.suffix in GAME_EXTS) and not is_disguise_file(e)
+        and e.rel not in {c.rel for c in picked}
         and not any(e.rel.startswith(c.rel + "/") for c in picked)
         for e in entries
     )
-    if picked and not pc_left:
-        rep.drop = []
-        rep.drop_bytes = 0
-        rep.warnings.append("除了安卓/iOS 之外没找到 PC 端，先不动，人工看一眼")
-    if picked:
+    if picked and not remain_game and rep.total_gb > threshold_gb:
+        # 多平台剪完没 PC：放弃剪裁（伪装文件仍删）
+        only_disguise = [e for e in picked if is_disguise_file(e)]
+        platform_drops = [e for e in picked if not is_disguise_file(e)]
+        if platform_drops and not remain_game:
+            rep.drop = only_disguise
+            rep.drop_bytes = sum(e.size for e in only_disguise)
+            rep.warnings.append("除了安卓/iOS 之外没找到 PC 端，平台目录先不动；伪装文件仍删")
+    if rep.drop:
         rep.keep = [
             e.rel for e in tops
-            if e.rel not in {c.rel for c in picked} and not any(e.rel.startswith(c.rel + "/") for c in picked)
+            if e.rel not in {c.rel for c in rep.drop}
+            and not any(e.rel.startswith(c.rel + "/") for c in rep.drop)
         ]
     return rep
 

@@ -220,6 +220,18 @@ class TaskDB:
         row = self._query("SELECT 1 FROM bad_link WHERE link = ?", (str(link),))
         return bool(row)
 
+    def clear_bad_links(self, only_content: bool = True) -> int:
+        """清掉误判拉黑。only_content=True 时保留「分享已失效」类，只清伪装/非游戏误伤。"""
+        with self._lock:
+            if only_content:
+                cur = self._conn.execute(
+                    "DELETE FROM bad_link WHERE reason NOT LIKE '%分享已失效%'"
+                )
+            else:
+                cur = self._conn.execute("DELETE FROM bad_link")
+            self._conn.commit()
+            return int(cur.rowcount or 0)
+
     def count_bad_links(self) -> int:
         rows = self._query("SELECT COUNT(*) AS n FROM bad_link")
         return int(rows[0]["n"]) if rows else 0

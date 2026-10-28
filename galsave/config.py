@@ -34,6 +34,8 @@ DEFAULTS: dict[str, Any] = {
     "prune": {
         "enabled": True,
         "threshold_gb": 4.0,
+        # 转存后用 DeepSeek 看最底层文件：辨认伪装包里的游戏本体，并标 PC 端
+        "ai_inspect": True,
     },
     "vndb": {
         "base_url": "https://api.vndb.org/kana",

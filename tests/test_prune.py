@@ -96,7 +96,24 @@ class GameLikeTest(unittest.TestCase):
             _f("资料.pdf", 0.02),
         ])
         self.assertFalse(rep.ok)
-        self.assertIn("视频/文档", rep.reason)
+        self.assertTrue("伪装" in rep.reason or "视频" in rep.reason or "没有游戏" in rep.reason)
+
+    def test_pc_labeled_huge_mp4_is_disguise(self) -> None:
+        from galsave.prune import is_disguise_file
+
+        fake = _f("【PC】白色相簿2完整版.mp4", 8.5)
+        self.assertTrue(is_disguise_file(fake))
+        real = _f("【PC】白色相簿2.iso", 8.5)
+        self.assertFalse(is_disguise_file(real))
+        rep = check_game_like([fake])
+        self.assertFalse(rep.ok)
+
+    def test_iso_with_mp4_disguise_still_ok(self) -> None:
+        rep = check_game_like([
+            _f("【PC】课件.mp4", 9.0),
+            _f("PC/game.iso", 4.0),
+        ])
+        self.assertTrue(rep.ok)
 
     def test_empty_share(self) -> None:
         rep = check_game_like([])
@@ -131,6 +148,15 @@ class PlanPruneTest(unittest.TestCase):
         rep = plan_prune(entries, threshold_gb=9.0)
         self.assertEqual(rep.drop, [])
         self.assertIn("没超过", rep.reason)
+
+    def test_disguise_mp4_dropped_even_below_threshold(self) -> None:
+        entries = [
+            _f("PC/game.rar", 2.0),
+            _f("【PC】宣传.mp4", 1.5),
+        ]
+        rep = plan_prune(entries, threshold_gb=9.0)
+        self.assertTrue(rep.ok)
+        self.assertEqual([e.name for e in rep.drop], ["【PC】宣传.mp4"])
 
     def test_mixed_parent_descends_one_level(self) -> None:
         entries = [

@@ -242,6 +242,23 @@ class SchedulerDecisionTest(unittest.TestCase):
         self.sched.skip_types = {SOURCE_SHARE, SOURCE_DIRECT, SOURCE_MAGNET}
         self.assertEqual(self.sched._allow_types(), [])
 
+    def test_reconcile_requeues_work_whose_cloud_dir_is_gone(self) -> None:
+        # 台账里登记了、网盘里却没了的目录：退回待捞，别让它一直占着「已入库」
+        self.db.mark_done("v1", 9.0, "作品", SOURCE_SHARE, "kungal", "l", "/gal_save/v1 作品", 4.0)
+        self.db.mark_done("v2", 9.0, "还在", SOURCE_SHARE, "kungal", "l", "/gal_save/v2 还在", 5.0)
+
+        class Client:
+            def exists(self, path: str) -> bool:
+                return "v1" not in path
+
+        saver = FakeSaver([])
+        saver._client = Client()  # type: ignore[attr-defined]
+        self.sched.saver = saver
+        self.assertEqual(self.sched.reconcile(), 1)
+        self.assertFalse(self.db.is_done("v1"))
+        self.assertTrue(self.db.is_done("v2"))
+        self.assertEqual([r["vndb_id"] for r in self.db.due_retries(now=2**31 - 1)], ["v1"])
+
 
 if __name__ == "__main__":
     unittest.main()
