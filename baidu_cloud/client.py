@@ -127,7 +127,10 @@ class BaiduClient:
 
     # ---------- 底层请求 ----------
     def _raise_http(self, resp: requests.Response) -> None:
-        """非 200 时先看 body：百度有时候用 400 携带真正的 errno，直接抛 HTTP 码会丢信息。"""
+        """非 200 时先看 body：百度有时候用 400 携带真正的 errno，直接抛 HTTP 码会丢信息。
+
+        两种字段风格都要认：`errno`/`errmsg`（api/*）和 `error_code`/`error_msg`（cloud_dl）。
+        """
         body = {}
         try:
             parsed = resp.json()
@@ -135,9 +138,10 @@ class BaiduClient:
                 body = parsed
         except ValueError:
             body = {}
-        errno = body.get("errno")
+        errno = body.get("errno", body.get("error_code"))
         if errno not in (None, 0, "0"):
-            raise BaiduError(errno, str(body.get("errmsg") or body.get("error_msg") or ""), "百度网盘")
+            message = str(body.get("errmsg") or body.get("error_msg") or body.get("show_msg") or "")
+            raise BaiduError(errno, message, "百度网盘")
         raise BaiduError(-1, f"HTTP {resp.status_code}", "百度网盘")
 
     def _get(self, url: str, params: dict[str, Any] | None = None, **kwargs: Any) -> requests.Response:
@@ -200,28 +204,41 @@ class BaiduClient:
 
     # ---------- 账号 / 容量 ----------
     def quota(self) -> dict[str, float]:
-        """返回 total/used/free，单位 GB。"""
+        """返回 total/used/free，单位 GB（十进制，1GB=10^9 字节，和网盘页面显示一致）。
+
+        实测 /api/quota 的 free 字段现在恒为 0，实际剩余得用 total-used 算。
+        """
         data = self._json(self._get(f"{PAN}/api/quota", params=self.common_params()), "查询容量")
-        gb = 1024 ** 3
+        gb = 1000 ** 3
+        total = float(data.get("total") or 0)
+        used = float(data.get("used") or 0)
+        free = float(data.get("free") or 0) or max(0.0, total - used)
         return {
-            "total_gb": round(float(data.get("total") or 0) / gb, 2),
-            "used_gb": round(float(data.get("used") or 0) / gb, 2),
-            "free_gb": round(float(data.get("free") or 0) / gb, 2),
+            "total_gb": round(total / gb, 2),
+            "used_gb": round(used / gb, 2),
+            "free_gb": round(free / gb, 2),
         }
 
     def user_info(self) -> dict[str, Any]:
-        """账号信息。`/api/user/getinfo` 经常回 errno=2（参数要求随前端版本变），
-        昵称只是展示用，取不到就返回空字典，不要因此让整条流水线失败。"""
+        """账号信息。
+
+        `/api/user/getinfo` 现在回 `{"errmsg":"params error","errno":2}`，
+        改用 xpan 的 uinfo 接口（同样是 Cookie 登录态就够）。
+        """
+        data: dict[str, Any] = {}
         try:
-            data = self._json(self._get(f"{PAN}/api/user/getinfo", params=self.common_params()), "取账号信息")
+            data = self._json(
+                self._get(f"{PAN}/rest/2.0/xpan/nas", params={**self.common_params(), "method": "uinfo"}),
+                "取账号信息",
+            )
         except BaiduError:
             return {}
-        records = data.get("records") or []
-        info = records[0] if records else {}
+        vip_type = int(data.get("vip_type") or 0)
         return {
-            "name": info.get("uname") or info.get("nickname") or "",
-            "uk": info.get("uk") or "",
-            "vip": bool(info.get("vip_type") or info.get("is_vip")),
+            "name": data.get("netdisk_name") or data.get("baidu_name") or "",
+            "uk": data.get("uk") or "",
+            "vip": vip_type > 0,
+            "vip_type": vip_type,
         }
 
     # ---------- 目录 ----------
@@ -251,9 +268,14 @@ class BaiduClient:
         return any(str(item.get("server_filename") or "") == name for item in items)
 
     def mkdir(self, remote_dir: str) -> bool:
-        """建目录（已存在返回 False，不报错）。"""
-        body = {"isdir": "1", "block_list": "[]", "size": "0"}
-        params = {"a": "commit", "dir": remote_dir, **self.common_params()}
+        """建目录（已存在返回 False，不报错）。
+
+        实测参数：`dir` 要放**父目录**，新目录的完整路径放在 body 的 `path` 里。
+        只给 `dir` 不给 `path` 会回 errno=2（参数错误）。
+        """
+        target = "/" + str(remote_dir or "").strip("/")
+        body = {"path": target, "isdir": "1", "block_list": "[]", "size": "0"}
+        params = {"a": "commit", "dir": posix_parent(target), **self.common_params()}
         resp = self._post(f"{PAN}/api/create", params=params, data=body)
         try:
             data = resp.json()
@@ -325,7 +347,7 @@ class BaiduClient:
         return total
 
     def dir_size_gb(self, remote_dir: str) -> float:
-        return round(self.dir_size_bytes(remote_dir) / (1024 ** 3), 3)
+        return round(self.dir_size_bytes(remote_dir) / (1000 ** 3), 3)
 
     # ---------- Cookie 导入 ----------
     @classmethod

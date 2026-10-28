@@ -49,6 +49,16 @@ CREATE TABLE IF NOT EXISTS vn_seen (
     title        TEXT,
     first_seen_ts INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS magnet_pending (
+    vndb_id  TEXT PRIMARY KEY,
+    title    TEXT,
+    magnet   TEXT NOT NULL,
+    size_gb  REAL,
+    site     TEXT,
+    note     TEXT,
+    ts       INTEGER NOT NULL
+);
 """
 
 
@@ -126,6 +136,7 @@ class TaskDB:
                  float(size_gb or 0), int(time.time())),
             )
             self._conn.execute("DELETE FROM retry WHERE vndb_id = ?", (vndb_id,))
+            self._conn.execute("DELETE FROM magnet_pending WHERE vndb_id = ?", (vndb_id,))
             self._conn.commit()
 
     def total_gb(self) -> float:
@@ -227,6 +238,43 @@ class TaskDB:
         self.meta_set("c_batch_gb", "0")
         self.meta_set("c_batch_started_ts", str(int(time.time())))
 
+    # ---------- 待处理磁力 ----------
+    def add_pending_magnet(
+        self,
+        vndb_id: str,
+        title: str,
+        magnet: str,
+        size_gb: float = 0.0,
+        site: str = "",
+        note: str = "",
+    ) -> None:
+        """记下没能自动落地的磁力（百度网盘已不接受磁力离线），供人工处理。"""
+        if not magnet:
+            return
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO magnet_pending (vndb_id, title, magnet, size_gb, site, note, ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(vndb_id) DO UPDATE SET
+                    title=excluded.title, magnet=excluded.magnet, size_gb=excluded.size_gb,
+                    site=excluded.site, note=excluded.note, ts=excluded.ts
+                """,
+                (vndb_id, title, magnet, float(size_gb or 0), site, str(note)[:300], int(time.time())),
+            )
+            self._conn.commit()
+
+    def pending_magnets(self, limit: int = 0) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM magnet_pending ORDER BY ts DESC"
+        params: tuple[Any, ...] = ()
+        if limit:
+            sql += " LIMIT ?"
+            params = (int(limit),)
+        return [dict(row) for row in self._query(sql, params)]
+
+    def count_pending_magnets(self) -> int:
+        return int(self._query("SELECT COUNT(*) AS n FROM magnet_pending")[0]["n"])
+
     # ---------- 观察 ----------
     def mark_seen(self, vndb_id: str, rating: float | None, title: str) -> None:
         self._execute(
@@ -241,6 +289,7 @@ class TaskDB:
             "total_gb": self.total_gb(),
             "by_source": self.count_by_source(),
             "retry": self.retry_count(),
+            "pending_magnet": self.count_pending_magnets(),
             "c_quota_gb": self.c_quota_used_gb(),
             "db": str(self.path),
         }

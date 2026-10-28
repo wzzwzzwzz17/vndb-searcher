@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from baidu_cloud.offline import MAGNET_UNSUPPORTED
 from galsave.cloud import CloudSaver, SaveResult
 from galsave.config import load_config
 from galsave.crawler.base import SOURCE_DIRECT, SOURCE_MAGNET, SOURCE_SHARE, Resource
@@ -123,7 +124,30 @@ class SchedulerDecisionTest(unittest.TestCase):
         self.assertFalse(self.db.is_done("v20802"))
         self.assertGreaterEqual(self.db.retry_count(), 1)
         self.assertFalse(self.sched.offline_ok)  # 识别出账号不支持离线
-        self.assertNotIn(SOURCE_MAGNET, self.sched._allow_types())
+        # 磁力仍然保留在来源列表里（只登记，不再真的请求接口）
+        self.assertIn(SOURCE_MAGNET, self.sched._allow_types())
+
+    def test_magnet_unsupported_is_recorded_for_manual_use(self) -> None:
+        saver = FakeSaver([SaveResult(ok=False, route=SOURCE_MAGNET, site="ggbase",
+                                      error=MAGNET_UNSUPPORTED)])
+        self._install([make_vn()], [make_resource()], saver)
+        self.sched.run(skip_retries=True)
+        self.assertFalse(self.sched.magnet_ok)
+        self.assertFalse(self.db.is_done("v20802"))
+        pending = self.db.pending_magnets()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["vndb_id"], "v20802")
+        self.assertEqual(pending[0]["magnet"], "magnet:?xt=urn:btih:0123456789abcdef")
+        # 记入待处理就不算「重试」：不会被反复重跑
+        self.assertEqual(self.db.retry_count(), 0)
+
+    def test_magnet_skips_api_once_known_unsupported(self) -> None:
+        self.sched.magnet_ok = False
+        saver = FakeSaver([SaveResult(ok=True, route=SOURCE_MAGNET, site="ggbase", cloud_path="/p", size_gb=1.0)])
+        self._install([make_vn()], [make_resource()], saver)
+        self.sched.run(skip_retries=True)
+        self.assertEqual(saver.saved, [])  # 没再去调离线接口
+        self.assertEqual(len(self.db.pending_magnets()), 1)
 
     def test_resource_over_limit_is_skipped(self) -> None:
         saver = FakeSaver([SaveResult(ok=True, route=SOURCE_MAGNET, site="ggbase", cloud_path="/p", size_gb=1.0)])
@@ -142,13 +166,13 @@ class SchedulerDecisionTest(unittest.TestCase):
         self.assertEqual(summary["success"], 0)
         self.assertEqual(saver.saved, [])
 
-    def test_allow_types_shrinks_when_offline_and_c_unavailable(self) -> None:
+    def test_allow_types_shrinks_when_direct_unavailable(self) -> None:
         self.sched.offline_ok = False
         self.sched.c_ok = False
-        # 离线（magnet）靠账号、直链（direct）靠本地配额，两个都没了就只剩云端转存
-        self.assertEqual(self.sched._allow_types(), [SOURCE_SHARE])
+        # 磁力始终保留（只登记待处理），直链靠本地配额，配额没断时也能用
+        self.assertEqual(self.sched._allow_types(), [SOURCE_MAGNET, SOURCE_SHARE])
         self.sched.c_ok = True
-        self.assertEqual(self.sched._allow_types(), [SOURCE_SHARE, SOURCE_DIRECT])
+        self.assertEqual(self.sched._allow_types(), [SOURCE_MAGNET, SOURCE_SHARE, SOURCE_DIRECT])
 
     def test_allow_types_skips_direct_when_quota_used(self) -> None:
         self.sched.saver = FakeSaver([], quota_gb=0.0)

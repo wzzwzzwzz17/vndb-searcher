@@ -18,6 +18,7 @@ from ..logger import get_logger
 
 CHUNK = 1024 * 1024
 MIN_FREE_GB = 8.0
+GB_BYTES = 1000 ** 3  # 与网盘/方案文档一致，按十进制 GB 算
 
 
 class DownloadError(RuntimeError):
@@ -124,7 +125,7 @@ class DirectDownloader:
         raise DownloadError(f"直链下载失败: {last_error}")
 
     def _check_space(self, target: Path) -> None:
-        free_gb = shutil.disk_usage(target.parent).free / (1024 ** 3)
+        free_gb = shutil.disk_usage(target.parent).free / GB_BYTES
         if free_gb < MIN_FREE_GB:
             raise DownloadError(f"磁盘剩余 {free_gb:.1f}GB，低于 {MIN_FREE_GB}GB 安全线，先清理")
 

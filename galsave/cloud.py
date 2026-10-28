@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from baidu_cloud import BaiduClient, BaiduError, OfflineDownloader, ShareTransfer, Uploader
+from baidu_cloud.offline import MAGNET_UNSUPPORTED, MAGNET_UNSUPPORTED_ERRNO
 from baidu_cloud.size import measure
 
 from .config import cget
@@ -101,6 +102,9 @@ class CloudSaver:
             offline = OfflineDownloader(self.client, str((self.cfg.get("baidu") or {}).get("app_id") or "250528"))
             task_id, save_dir = offline.add_into(magnet, self.offline_dir, title)
         except BaiduError as exc:
+            if int(getattr(exc, "errno", 0) or 0) == MAGNET_UNSUPPORTED_ERRNO:
+                # 百度网盘已不支持磁力离线：这条转人工处理（调度器记进 magnet_pending）
+                return SaveResult(False, "magnet", site, error=MAGNET_UNSUPPORTED, detail=magnet[:200])
             return SaveResult(False, "magnet", site, error=str(exc))
         self.log.info("离线任务已建 %s → %s", task_id, save_dir)
 
@@ -112,7 +116,7 @@ class CloudSaver:
 
         size_gb = measure(self.client, save_dir)
         if size_gb <= 0:
-            size_gb = round(int(info.get("file_size") or 0) / (1024 ** 3), 3)
+            size_gb = round(int(info.get("file_size") or 0) / (1000 ** 3), 3)
         if size_gb <= 0:
             return SaveResult(False, "magnet", site, error="离线完成但量不到体积")
         return SaveResult(True, "magnet", site, cloud_path=save_dir, size_gb=size_gb,
@@ -140,7 +144,7 @@ class CloudSaver:
         # 先看体积再决定下不下：C 源花的是校园流量，不能下完才发现配额不够
         expected_bytes, _ = self._downloader.probe(url, referer=referer)
         if expected_bytes:
-            expected_gb = round(expected_bytes / (1024 ** 3), 3)
+            expected_gb = round(expected_bytes / (1000 ** 3), 3)
             if expected_gb > remaining:
                 return SaveResult(False, "direct", site,
                                   error=f"本批 C 源配额只剩 {remaining:.2f}GB，这部要 {expected_gb:.2f}GB")
@@ -149,7 +153,7 @@ class CloudSaver:
         except (DownloadError, OSError) as exc:
             return SaveResult(False, "direct", site, error=f"下载失败: {exc}")
 
-        plain_gb = round(local.stat().st_size / (1024 ** 3), 3)
+        plain_gb = round(local.stat().st_size / (1000 ** 3), 3)
         remaining = self.c_remaining_gb()
         if plain_gb > remaining:
             self._downloader.cleanup(local)

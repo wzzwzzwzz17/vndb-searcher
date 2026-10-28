@@ -15,6 +15,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from baidu_cloud.offline import MAGNET_UNSUPPORTED
+
 from .cloud import CloudSaver, SaveResult
 from .config import cget, cpath
 from .crawler import SearchEngine
@@ -47,6 +49,7 @@ class Scheduler:
         self.processed: set[str] = set()
         self.stats = {"success": 0, "failed": 0, "skipped": 0, "vns": 0}
         self.offline_ok = True
+        self.magnet_ok = True  # 磁力能不能真交给网盘离线（实测百度已不支持，会变成 False）
         self.c_ok = True
 
     # ---------- 上限 ----------
@@ -249,6 +252,10 @@ class Scheduler:
                 continue
 
             self.log.info("  尝试 %s", res)
+            if res.source_type == SOURCE_MAGNET and not self.magnet_ok:
+                # 已知网盘不收磁力离线：不再白发请求，直接登记待处理
+                self._record_pending_magnet(vn, res)
+                continue
             result = self.saver.save(res)
             if result.ok:
                 self.db.mark_done(
@@ -267,6 +274,11 @@ class Scheduler:
                 return True
 
             self.log.warning("  ✗ %s", result.error)
+            if MAGNET_UNSUPPORTED in str(result.error):
+                # 百度网盘不再接受磁力离线：之后每条磁力都只登记、不再调接口
+                self.magnet_ok = False
+                self._record_pending_magnet(vn, res, result.error)
+                continue
             if "SVIP" in str(result.error):
                 self.offline_ok = False
                 self.log.warning("账号不支持离线下载，后续只用 share/direct")
@@ -277,13 +289,26 @@ class Scheduler:
         self.stats["failed"] += 1
         return False
 
+    def _record_pending_magnet(self, vn: Vn, res: Any, note: str = "") -> None:
+        self.db.add_pending_magnet(
+            vndb_id=vn.id,
+            title=vn.title,
+            magnet=res.link or "",
+            size_gb=float(res.size_gb or 0),
+            site=res.site,
+            note=note or MAGNET_UNSUPPORTED,
+        )
+        self.log.info("  磁力已记入待处理清单（python -m galsave magnets 可导出）")
+
     def _allow_types(self) -> list[str]:
-        """按当前可用性收缩来源列表。"""
+        """按当前可用性收缩来源列表。
+
+        磁力永远保留：即便网盘不收磁力离线（实测 36001），也仍然把磁力登记到
+        magnet_pending，方便之后用本地 BT 客户端或其它方式处理。
+        """
         priority = list(self.cfg.get("source_priority") or ["magnet", "share", "direct"])
         allow = []
         for source in priority:
-            if source == SOURCE_MAGNET and not self.offline_ok:
-                continue
             if source == SOURCE_DIRECT and (not self.c_ok or self.saver.c_remaining_gb() <= 0):
                 if self.saver.c_remaining_gb() <= 0:
                     self.log.warning("C 源本批配额已用完，暂时不下载直链。换批可执行: python -m galsave quota --reset")

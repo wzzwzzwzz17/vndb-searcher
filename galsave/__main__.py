@@ -63,6 +63,8 @@ def cmd_status(args: argparse.Namespace) -> int:
           f"（上限 {float(cfg.get('max_total_gb') or 0):.0f}GB）")
     print(f"来源分布 : {stats['by_source'] or '空'}")
     print(f"待重试   : {stats['retry']} 条")
+    if stats.get("pending_magnet"):
+        print(f"待处理磁力: {stats['pending_magnet']} 条（网盘不接受磁力离线，用 python -m galsave magnets 导出）")
     print(f"C 源本批 : {stats['c_quota_gb']:.2f}GB / {float(cfg.get('c_quota_per_batch_gb') or 0):.0f}GB")
 
     if not auth.is_logged_in():
@@ -191,6 +193,29 @@ def cmd_quota(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_magnets(args: argparse.Namespace) -> int:
+    """导出没能自动入库的磁力（百度网盘已不接受磁力离线）。"""
+    cfg = _bootstrap(args)
+    db = TaskDB(cpath(cfg, "paths.db"))
+    rows = db.pending_magnets(limit=args.limit or 0)
+    if not rows:
+        print("没有待处理的磁力。")
+        return 0
+    lines = []
+    for row in rows:
+        size = f"{row['size_gb']:.2f}GB" if row.get("size_gb") else "体积未知"
+        lines.append(f"{row['title']}  [{row['site']}]  {size}  {row['magnet']}")
+    if args.out:
+        out = Path(args.out)
+        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"已写出 {len(lines)} 条到 {out}")
+    else:
+        for line in lines:
+            print(line)
+    print(f"\n共 {len(rows)} 条待处理（磁力离线已不可用，需要用本地 BT 客户端或其它方式自行处理）")
+    return 0
+
+
 def cmd_decrypt(args: argparse.Namespace) -> int:
     cfg = _bootstrap(args)
     from .crypto.enc import CryptoError, decrypt_file
@@ -252,6 +277,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_quota = sub.add_parser("quota", help="查网盘容量")
     p_quota.add_argument("--reset", action="store_true", help="把 C 源本批配额清零，开始新一批")
     p_quota.set_defaults(func=cmd_quota)
+
+    p_mag = sub.add_parser("magnets", help="导出待处理的磁力（网盘不接受磁力离线）")
+    p_mag.add_argument("--out", help="写到文件（每行一条）")
+    p_mag.add_argument("--limit", type=int, default=0, help="只导出最近 N 条")
+    p_mag.set_defaults(func=cmd_magnets)
 
     p_dec = sub.add_parser("decrypt", help="还原 C 路线加密文件")
     p_dec.add_argument("file")

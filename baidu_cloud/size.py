@@ -8,6 +8,9 @@ from typing import Any
 
 from .client import BaiduClient, BaiduError
 
+# 统一用十进制 GB（1GB = 10^9 字节）：方案文档写的是 1TB=1000GB，网盘页面也这么显示。
+GB_BYTES = 1000 ** 3
+
 _UNITS = (
     (re.compile(r"([\d.]+)\s*T(?:B)?", re.I), 1000.0),
     (re.compile(r"([\d.]+)\s*G(?:B)?", re.I), 1.0),
@@ -39,7 +42,7 @@ def fmt_gb(gb: float) -> str:
 
 
 def fmt_bytes(nbytes: int) -> str:
-    return fmt_gb(int(nbytes or 0) / (1024 ** 3))
+    return fmt_gb(int(nbytes or 0) / GB_BYTES)
 
 
 def measure(client: BaiduClient, remote_path: str, recursive: bool = True) -> float:
@@ -56,7 +59,7 @@ def measure(client: BaiduClient, remote_path: str, recursive: bool = True) -> fl
             continue
         if int(item.get("isdir") or 0):
             return client.dir_size_gb(remote_path) if recursive else 0.0
-        return round(int(item.get("size") or 0) / (1024 ** 3), 3)
+        return round(int(item.get("size") or 0) / GB_BYTES, 3)
     return 0.0
 
 

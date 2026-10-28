@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
 """磁力离线下载（A 路线）：把 magnet 丢给百度网盘离线，云端下完再统计体积。
 
-注意：离线下载是会员功能，非 SVIP 账号会返回 errno 31064，这里会明确报出来，
-让主程序把资源转给 B/C 路线，而不是当成「网络错误」重试到死。
+实测（2026-10，SVIP 账号）：`cloud_dl` 的 `add_task` 对 magnet 一律返回
+`{"error_code":36001,"error_msg":"param error"}`，而同样的参数换成 http 直链
+（type=1）就能建任务。也就是说百度网盘这边已经不再接受磁力/BT 离线任务。
+所以这条路线现在基本用不上：`BaiduError` 会带上明确的「不接受磁力」说明，
+主程序据此把资源记为待处理磁力、转去 B/C 路线，而不是反复重试。
+
+非 SVIP 账号建离线任务会返回 errno 31064，同样明确报出来。
 """
 
 from __future__ import annotations
@@ -15,6 +20,10 @@ from .client import PAN, BaiduError, BaiduClient, join_posix
 from .share import safe_name
 
 CLOUD_DL = f"{PAN}/rest/2.0/services/cloud_dl"
+
+# 实测结论：磁力任务一律 36001 param error，百度网盘已不支持 BT 离线。
+MAGNET_UNSUPPORTED = "百度网盘已不接受磁力离线任务（36001 param error）"
+MAGNET_UNSUPPORTED_ERRNO = 36001
 
 # 离线任务状态（cloud_dl 返回的 status 字段）
 STATUS_TEXT = {
@@ -57,9 +66,16 @@ class OfflineDownloader:
             data = resp.json()
         except ValueError as exc:
             raise BaiduError(-1, "离线接口返回不是 JSON", "百度离线") from exc
-        errno = data.get("errno")
+        errno = data.get("errno", data.get("error_code"))
         if errno not in (0, "0", None):
-            raise BaiduError(errno, str(data.get("show_msg") or data.get("error_msg") or ""), "百度离线")
+            message = str(data.get("show_msg") or data.get("error_msg") or data.get("errmsg") or "")
+            if link_type == 4 and str(errno) in ("36001", "2"):
+                raise BaiduError(
+                    36001,
+                    MAGNET_UNSUPPORTED,
+                    "百度离线",
+                )
+            raise BaiduError(errno, message, "百度离线")
         task_id = str(data.get("task_id") or data.get("taskid") or "")
         if not task_id:
             raise BaiduError(-1, "离线接口没返回 task_id", "百度离线")

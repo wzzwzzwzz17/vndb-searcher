@@ -190,13 +190,17 @@ VNDB 的 `olang` 字段是「官方原始语言」。`galsave/vndb.py` 在 VNDB 
 
 | 来源 | 站点 | 怎么进网盘 | 占不占本地网络 |
 | --- | --- | --- | --- |
-| `magnet` | GGBase（镜像 `ggb.dlgal.com`） | 解析出磁力链接，交给百度网盘离线下载 | 不占（云端下载） |
+| `magnet` | GGBase（镜像 `ggb.dlgal.com`） | 解析出磁力链接；百度网盘现已不接受磁力离线（见下），所以只登记到「待处理磁力」清单 | 不占（不下载） |
 | `share` | 鲲 kungal | 抓分享链接，云端转存到自己网盘 | 不占（云端转存） |
 | `direct` | 真红 shinnku | 本地下载 → AES-GCM 加密 → 改名成 `.png` → 分片上传 | 占，按批配额 500 GB |
 
-`source_priority` 决定同一部作品优先试哪种来源。离线下载需要百度网盘 SVIP，普通账号会直接报「该操作需要百度网盘 SVIP（离线下载仅会员可用）」，不会静默失败。
+`source_priority` 决定同一部作品优先试哪种来源。
 
-直链路线会占本地网络，所以按批计：`c_quota_per_batch_gb: 500`，用完就只用磁力和转存，直到你执行 `python -m galsave quota --reset` 开新的一批（清零的只是本批用量，已入库的账不变）。
+**关于磁力离线（实测结论）**：`POST /rest/2.0/services/cloud_dl?method=add_task` 对磁力（`type=4`）一律返回 `{"error_code":36001,"error_msg":"param error"}`，换磁力、换 `type`、换 `app_id`/`clienttype`、加 `select`/`dn` 都无效；同样参数换成 http 直链（`type=1`）立刻成功，说明不是凭据或会员的问题，而是**百度网盘已不再为个人账号提供 BT/磁力离线**（离线只剩 http/ftp）。SVIP 账号的会员权益里仍然写着「离线下载套餐」，但磁力任务进不去。
+
+所以 `galsave` 现在的做法是：GGBase 解析出来的磁力不再白调接口，而是写进数据库 `magnet_pending` 表（`vndb_id / title / magnet / size_gb / site`），一条作品成功从别的源入库时会自动清掉对应记录。用 `python -m galsave magnets` 导出这份清单，之后可以自己用本地 BT 客户端挂机下载，或者等哪天网盘又支持了再重试。
+
+直链路线会占本地网络，所以按批计：`c_quota_per_batch_gb: 500`，用完就只用转存和磁力登记，直到你执行 `python -m galsave quota --reset` 开新的一批（清零的只是本批用量，已入库的账不变）。直链在下载前先发一次 `HEAD` 探体积，超出本批剩余额度就不下载——校园流量不该花在注定要删的文件上。
 
 ### 分级队列与停机
 
@@ -230,6 +234,7 @@ python -m galsave run                # 正式跑
 python -m galsave run --buckets 8.0 7.5 --max-vns 20
 python -m galsave quota              # 只看 4TB / 500GB 配额
 python -m galsave quota --reset      # C 源 500GB 用完后换新的一批（配额清零，账不会丢）
+python -m galsave magnets --out magnets.txt   # 导出网盘收不了的磁力清单（自己用 BT 客户端处理）
 python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载的加密文件
 ```
 
@@ -237,11 +242,12 @@ python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载
 
 ### 数据与测试
 
-- 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` 四张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。
-- 测试：`python -m unittest discover -s tests -t .`（83 项，全部离线夹具，不联网）。
+- 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` / `magnet_pending` 五张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。
+- 测试：`python -m unittest discover -s tests -t .`（87 项，全部离线夹具，不联网）。
 
 ### 已知局限
 
+- 百度网盘已经不支持磁力离线（`add_task` 对 `type=4` 恒回 `36001 param error`），所以 GGBase 这条线目前只能产出「待处理磁力清单」，真正进网盘只能靠鲲转存或真红直链。
 - 鲲的资源多为「合集」类条目，默认 `allow_collection: false` 会跳过，所以有些作品在鲲上捞不到本体。
 - 真红只有直链，走本地下载，受 500 GB/批 配额限制；合集区的直链主机和 ZD CDN 不一样，两种都支持。
 - GGBase 镜像的翻页参数无效（`p=0/1/2` 返回同一批），已按条目 ID 去重，但深层的早期资源搜不到。
