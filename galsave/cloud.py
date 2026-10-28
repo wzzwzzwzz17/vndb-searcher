@@ -60,6 +60,10 @@ class CloudSaver:
         self.c_quota_gb = float(cfg.get("c_quota_per_batch_gb") or 500)
         self.min_gb = float(cfg.get("min_resource_gb") or 0.3)
         self.max_gb = float(cfg.get("max_resource_gb") or 60)
+        # 入库后体检：不是游戏本体就删掉；多平台包只留 PC
+        prune_cfg = cfg.get("prune") or {}
+        self.prune_enabled = bool(prune_cfg.get("enabled", True))
+        self.prune_threshold_gb = float(prune_cfg.get("threshold_gb") or 9.0)
 
         enc = cfg.get("encrypt") or {}
         self.encrypt_enabled = bool(enc.get("enabled", True))
@@ -193,11 +197,23 @@ class CloudSaver:
                 return SaveResult(False, "share", site,
                                   error=f"分享体积 {plain_gb:.2f}GB 超出单部上限 {self.max_gb:.0f}GB",
                                   detail=link[:200])
+            bait = self._bait_name(info)
+            if bait:
+                self.db.add_bad_link(link, "标题像课程/资料")
+                return SaveResult(False, "share", site,
+                                  error=f"分享标题像课程/资料（{bait}），不是游戏本体，跳过",
+                                  detail=link[:200])
             result = transfer.transfer_into(link, folder, title=title, info=info)
         except BaiduError as exc:
             self._remove_if_empty(folder)
             return SaveResult(False, "share", site, error=str(exc))
         cloud_path = str(result.get("cloud_path") or "")
+        verdict = self.inspect_and_prune(cloud_path)
+        if verdict is not None and not verdict.ok:
+            self.db.add_bad_link(link, verdict.reason)
+            return SaveResult(False, "share", site, cloud_path=cloud_path,
+                              error=f"分享内容不是游戏本体（{verdict.reason}），已删除并跳过",
+                              detail=link[:200])
         size_gb = measure(self.client, cloud_path)
         if size_gb <= 0:
             # 列表接口偶尔有延迟：退回用分享页里各文件的 size 求和
@@ -268,6 +284,47 @@ class CloudSaver:
         size_gb = measure(self.client, remote_path)
         return SaveResult(True, route, site, cloud_path=remote_path,
                           size_gb=size_gb or plain_gb, detail=f"本地下载 {plain_gb:.2f}GB 已加密上传")
+
+    # ---------- 入库后体检 ----------
+    def _bait_name(self, info: dict[str, Any]) -> str:
+        """分享根目录名一看就是课程/资料时返回那个名字（转都别转）。"""
+        from .prune import looks_like_bait
+
+        for item in info.get("files") or []:
+            name = str(item.get("server_filename") or "")
+            if looks_like_bait(name):
+                return name[:40]
+        return ""
+
+    def inspect_and_prune(self, folder: str) -> Any:
+        """列一遍入库目录：不是游戏本体就整目录删掉；多平台包只留 PC。
+
+        返回 `prune.Report`（`ok=False` 表示已经删掉），异常时返回 `None`（不影响主流程）。
+        """
+        if not self.prune_enabled or not folder:
+            return None
+        try:
+            from .prune import apply_report, plan_prune, walk_cloud
+
+            entries = walk_cloud(self.client, folder)
+            report = plan_prune(entries, threshold_gb=self.prune_threshold_gb)
+            if not report.ok:
+                self.log.warning("入库体检：%s（%s）", report.summary(), folder)
+                self.client.delete([folder])
+                return report
+            if report.drop:
+                removed = apply_report(self.client, folder, report)
+                self.log.info("入库体检：%s → 删掉 %d 项 %.2fGB 的非 PC 内容",
+                              report.summary(), removed, report.drop_gb)
+            for note in report.warnings:
+                self.log.warning("入库体检：%s", note)
+            return report
+        except BaiduError as exc:
+            self.log.warning("入库体检失败（先保留原样）：%s", exc)
+            return None
+        except Exception as exc:  # noqa: BLE001 - 体检不该打断入库
+            self.log.warning("入库体检异常（先保留原样）：%s", exc)
+            return None
 
     # ---------- 清理 ----------
     def _remove_if_empty(self, folder: str) -> None:

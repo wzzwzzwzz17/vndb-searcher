@@ -268,21 +268,33 @@ python -m galsave quota --reset      # C 源 500GB 用完后换新的一批（�
 python -m galsave magnets --out magnets.txt   # 导出网盘收不了的磁力清单（自己用 BT 客户端处理）
 python -m galsave reorg              # 看现有网盘目录该怎么改成 v<编号> <日文名>
 python -m galsave reorg --apply      # 真的在网盘里改名/移动到规范结构
+python -m galsave prune              # 体检已入库目录：诱饵分享、多平台包里的非 PC 文件
+python -m galsave prune --apply      # 真的删（诱饵目录同时从 done 表移除，可以重新捞）
 python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载的加密文件
 ```
 
 配置在仓库根的 `config.yaml`，本地覆盖可以建 `config.local.yaml`（已忽略），或者用 `GALSAVE_CONFIG` 指定别的文件、`GALSAVE_MAX_GB` / `GALSAVE_C_QUOTA_GB` / `GALSAVE_FUZZY` / `GALSAVE_PROXY` 临时改值。
 
+### 入库体检（诱饵分享与多平台包）
+
+实测踩到过两个坑，所以每次转存完都会列一遍目录再算「入库成功」：
+
+1. **诱饵分享**。鲲上不少资源条目的百度链接其实是「课程/资料」包，根目录名写成 `2026真实U3D脚本拆解实践班直播第19讲`、`2026高等数学核心考点精讲第CABF讲`，里面全是 `.mp4` 和 `.pdf`，一个游戏文件都没有——但站内标注的体积照样是十几 GB，还会被「按体积从大到小」的排序优先选中。现在的规则是：转存前先看分享根目录名，命中 `直播 / 考点 / 精讲 / 实践班 / 拆解 / U3D / 汇编` 这类词就直接跳过；转存后按字节占比判断，`.exe/.iso/.rar/.7z/.xp3` 这类游戏文件占不到 30%、而视频+文档占一半以上，就判为诱饵，整目录删掉并把这根链接记进 `bad_link` 表，下次不再浪费一次转存。
+
+2. **多平台打包**。正版合集（`【PC+KRKR+iOS+安卓直装】`）会把几个平台放在同一层，单部能到 10~30GB。`prune.threshold_gb`（默认 9GB）以上的目录会按**最底层**的文件名分类：名字里有 `安卓 / APK / KRKR / Tyranor / Winlator / IPA / iOS` 的子树删掉，`PC / Windows / 硬盘版 / ISO` 的留下；同一层既有 PC 又有安卓的（`【PC+安卓】`）会再往下一层判断。判不准的一律不动——宁可多占空间，也不能删错文件。删之前还要确认「删完还剩至少一个 PC 项」，否则整批放弃并打一条警告。
+
+3. 删掉的空目录也会回收：转存/上传失败时不留空文件夹，`prune --apply` 里的诱饵目录是整个删掉。
+
 ### 数据与测试
 
-- 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` / `magnet_pending` 五张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。
-- 测试：`python -m unittest discover -s tests -t .`（112 项，全部离线夹具，不联网）；`python -m galsave selftest` 是 18 项纯本地自检。
+- 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` / `magnet_pending` / `bad_link` 六张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。
+- 测试：`python -m unittest discover -s tests -t .`（138 项，全部离线夹具，不联网）；`python -m galsave selftest` 是 19 项纯本地自检。
 
 ### 已知局限
 
 - 百度网盘已经不支持磁力离线（`add_task` 对 `type=4` 恒回 `36001 param error`），磁力只能走本机 aria2 再上传，或者留在「待处理磁力清单」里；真正不占流量的还是只有鲲转存。
 - 鲲的资源多为「合集」类条目，默认 `allow_collection: false` 会跳过，所以有些作品在鲲上捞不到本体。
-- 鲲有些作品的候选条目里，真实分享已经被替换成「模拟器 + 解压工具」打包（转存前的体积筛选会挡掉），这类作品得等别家站点。
+- 鲲有些作品的候选条目里，真实分享已经被替换成「模拟器 + 解压工具」打包，或者干脆是课程/资料包（体积还是十几 GB）。转存前按标题词、转存后按文件类型两道筛，能挡掉大部分，但仍有漏网的，遇到就用 `python -m galsave prune` 体检一次。
 - 真红只有直链，走本地下载，受 500 GB/批 配额限制；合集区的直链主机和 ZD CDN 不一样，两种都支持。
 - 磁力路线要求本机装了 aria2；没装时只能登记清单，这一点 `galsave status` 和日志里都会写出来。
 - GGBase 镜像的翻页参数无效（`p=0/1/2` 返回同一批），已按条目 ID 去重，但深层的早期资源搜不到。

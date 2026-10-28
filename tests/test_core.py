@@ -69,6 +69,23 @@ class DbTest(unittest.TestCase):
         self.db.close()
         self._tmp.cleanup()
 
+    def test_bad_link_remembered(self) -> None:
+        link = "https://pan.baidu.com/s/1bad?pwd=x"
+        self.assertFalse(self.db.is_bad_link(link))
+        self.db.add_bad_link(link, "课程/资料")
+        self.assertTrue(self.db.is_bad_link(link))
+        self.assertEqual(self.db.count_bad_links(), 1)
+        # 重复记录不新增行
+        self.db.add_bad_link(link, "又一次")
+        self.assertEqual(self.db.count_bad_links(), 1)
+        self.assertEqual(self.db.bad_links()[0]["reason"], "又一次")
+
+    def test_forget_done_removes_row(self) -> None:
+        self.db.mark_done("v9", 8.0, "A", "share", "kungal", "l", "/p", 1.0)
+        self.assertTrue(self.db.forget_done("v9"))
+        self.assertFalse(self.db.is_done("v9"))
+        self.assertFalse(self.db.forget_done("v9"))
+
     def test_mark_done_and_total(self) -> None:
         self.db.mark_done("v1", 8.5, "A", "magnet", "ggbase", "magnet:?xt=1", "/a", 12.5)
         self.db.mark_done("v2", 7.0, "B", "share", "kungal", "link", "/b", 7.5)

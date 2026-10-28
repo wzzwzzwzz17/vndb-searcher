@@ -9,6 +9,7 @@
     python -m galsave quota      # 查网盘容量
     python -m galsave magnets    # 导出没能自动入库的磁力
     python -m galsave reorg      # 把旧目录结构整理成 v<编号> <日文名>
+    python -m galsave prune      # 体检入库目录：诱饵分享删掉、多平台包只留 PC
     python -m galsave decrypt F  # 把 C 路线加密文件还原到本地
     python -m galsave selftest   # 纯本地自检，不联网
 """
@@ -18,6 +19,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 from .config import ConfigError, cpath, load_config
 from .db import TaskDB
@@ -274,6 +276,60 @@ def cmd_reorg(args: argparse.Namespace) -> int:
     return 0 if done == len(todo) else 1
 
 
+def cmd_prune(args: argparse.Namespace) -> int:
+    """检查已入库目录：诱饵分享整目录删掉，多平台包只留 PC。"""
+    cfg = _bootstrap(args)
+    from baidu_cloud import BaiduClient
+
+    from .prune import apply_report, plan_prune, walk_cloud
+
+    db = TaskDB(cpath(cfg, "paths.db"))
+    rows = db.all_done()
+    if args.id:
+        want = {args.id.lstrip("vV")}
+        rows = [r for r in rows if str(r.get("vndb_id") or "").lstrip("vV") in want]
+    if not rows:
+        print("没有入库记录。")
+        return 0
+
+    threshold = float(args.threshold or (cfg.get("prune") or {}).get("threshold_gb") or 9.0)
+    client = BaiduClient()
+    if not client.check_login():
+        print("百度网盘登录信息无效或过期，请执行: python -m galsave login")
+        return 1
+
+    junk: list[tuple[dict[str, Any], Any]] = []
+    for row in rows:
+        path = str(row.get("cloud_path") or "")
+        if not path:
+            continue
+        report = plan_prune(walk_cloud(client, path), threshold_gb=threshold)
+        print(f"\n{row.get('vndb_id')} {row.get('title')}")
+        print(f"  {report.summary()}")
+        if not report.ok:
+            junk.append((row, report))
+            continue
+        for entry in report.drop:
+            print(f"  - 删除 {entry.rel}  {entry.size_gb:.2f}GB")
+        for note in report.warnings:
+            print(f"  ! {note}")
+        if report.drop and args.apply:
+            removed = apply_report(client, path, report)
+            print(f"  → 已删除 {removed} 项，省下 {report.drop_gb:.2f}GB")
+
+    if junk:
+        total = sum(r.total_gb for _, r in junk)
+        print(f"\n以上 {len(junk)} 部共 {total:.2f}GB 不是游戏本体。")
+        if args.apply:
+            for row, _report in junk:
+                client.delete([str(row.get("cloud_path"))])
+                db.forget_done(row.get("vndb_id"))
+                print(f"  → 已删除 {row.get('cloud_path')}，并从 done 表移除，可重新捞取")
+        else:
+            print("加 --apply 会删掉这些目录并把它们从 done 表移除（之后可以重新捞取）。")
+    return 0
+
+
 def cmd_decrypt(args: argparse.Namespace) -> int:
     cfg = _bootstrap(args)
     from .crypto.enc import CryptoError, decrypt_file
@@ -345,6 +401,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_reorg = sub.add_parser("reorg", help="整理已入库条目的云端目录（v<编号> <日文名>）")
     p_reorg.add_argument("--apply", action="store_true", help="真的移动/改名（默认只看计划）")
     p_reorg.set_defaults(func=cmd_reorg)
+
+    p_prune = sub.add_parser("prune", help="体检已入库目录：诱饵分享删掉，多平台包只留 PC")
+    p_prune.add_argument("--apply", action="store_true", help="真的删除（默认只报告）")
+    p_prune.add_argument("--id", help="只处理某一部，如 v19073")
+    p_prune.add_argument("--threshold", type=float, help="超过多少 GB 才剪裁（默认取配置）")
+    p_prune.set_defaults(func=cmd_prune)
 
     p_dec = sub.add_parser("decrypt", help="还原 C 路线加密文件")
     p_dec.add_argument("file")

@@ -109,6 +109,21 @@ class SchedulerDecisionTest(unittest.TestCase):
         # 入库记录用 VNDB 的日文原名（用户要求按日文名命名）
         self.assertEqual(row["title"], "ランス10－決戦－")
 
+    def test_bad_link_is_skipped(self) -> None:
+        # 已知是诱饵的分享不该再花一次转存
+        self.db.add_bad_link("https://pan.baidu.com/s/1bad?pwd=x", "课程/资料")
+        bad = make_resource(size_gb=3.0, source=SOURCE_SHARE,
+                            link="https://pan.baidu.com/s/1bad?pwd=x")
+        good = make_resource(size_gb=2.0, source=SOURCE_SHARE,
+                             link="https://pan.baidu.com/s/1good?pwd=y")
+        saver = FakeSaver([SaveResult(ok=True, route=SOURCE_SHARE, site="kungal",
+                                      cloud_path="/gal_save/v1 x", size_gb=2.0)])
+        self._install([make_vn()], [bad, good], saver)
+        summary = self.sched.run(skip_retries=True)
+        self.assertEqual([r.link for r in saver.saved], ["https://pan.baidu.com/s/1good?pwd=y"])
+        self.assertEqual(summary["skipped"], 1)
+        self.assertEqual(summary["success"], 1)
+
     def test_already_done_is_skipped(self) -> None:
         self.db.mark_done("v20802", 9.06, "Rance X -Kessen-", SOURCE_MAGNET, "ggbase", "magnet:?x", "/p", 3.77)
         saver = FakeSaver([])

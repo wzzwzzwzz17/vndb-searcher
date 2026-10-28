@@ -30,6 +30,11 @@ DEFAULTS: dict[str, Any] = {
     "concurrency_per_vn": 3,
     "min_resource_gb": 0.3,
     "max_resource_gb": 60.0,
+    # 入库后体检：超过阈值就当多平台包，只留 PC；不是游戏本体的诱饵分享直接删掉
+    "prune": {
+        "enabled": True,
+        "threshold_gb": 9.0,
+    },
     "vndb": {
         "base_url": "https://api.vndb.org/kana",
         "timeout": 30,

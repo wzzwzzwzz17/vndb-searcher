@@ -248,6 +248,11 @@ class Scheduler:
                 self.db.add_retry(vn.id, res.source_type, res.site, str(exc), self.max_retry)
                 continue
 
+            if res.link and self.db.is_bad_link(res.link):
+                self.log.info("  跳过已知是诱饵/空壳的分享（%s）", res.site)
+                self.stats["skipped"] += 1
+                continue
+
             projected = self.total_gb() + float(res.size_gb or 0)
             if res.size_gb and projected > self.max_total_gb:
                 self.log.info("  跳过 %.2fGB 的 %s（会超过总上限）", res.size_gb, res.site)

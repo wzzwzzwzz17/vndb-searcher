@@ -59,6 +59,13 @@ CREATE TABLE IF NOT EXISTS magnet_pending (
     note     TEXT,
     ts       INTEGER NOT NULL
 );
+
+-- 已知是诱饵/空壳的分享链接，别再浪费一次转存
+CREATE TABLE IF NOT EXISTS bad_link (
+    link   TEXT PRIMARY KEY,
+    reason TEXT,
+    ts     INTEGER NOT NULL
+);
 """
 
 
@@ -164,6 +171,41 @@ class TaskDB:
     def all_done(self) -> list[dict[str, Any]]:
         """全部入库记录（整理云端目录结构时用）。"""
         return [dict(row) for row in self._query("SELECT * FROM done ORDER BY finish_ts")]
+
+    def forget_done(self, vndb_id: str) -> bool:
+        """删掉一条入库记录（内容判为诱饵、删了云端目录之后用），返回是否删到了。"""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM done WHERE vndb_id = ?", (str(vndb_id),))
+            return cur.rowcount > 0
+
+    # ---------- 已知坏链接 ----------
+    def add_bad_link(self, link: str, reason: str = "") -> None:
+        """记下这个分享/直链是诱饵或空壳，下次直接跳过（同一条链接不再转存）。"""
+        if not link:
+            return
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO bad_link (link, reason, ts) VALUES (?,?,?) "
+                "ON CONFLICT(link) DO UPDATE SET reason=excluded.reason, ts=excluded.ts",
+                (str(link), str(reason)[:200], int(time.time())),
+            )
+            self._conn.commit()
+
+    def is_bad_link(self, link: str) -> bool:
+        if not link:
+            return False
+        row = self._query("SELECT 1 FROM bad_link WHERE link = ?", (str(link),))
+        return bool(row)
+
+    def count_bad_links(self) -> int:
+        rows = self._query("SELECT COUNT(*) AS n FROM bad_link")
+        return int(rows[0]["n"]) if rows else 0
+
+    def bad_links(self, limit: int = 0) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM bad_link ORDER BY ts DESC"
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        return [dict(row) for row in self._query(sql)]
 
     # ---------- retry ----------
     def add_retry(

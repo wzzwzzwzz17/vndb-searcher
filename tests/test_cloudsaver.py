@@ -103,6 +103,8 @@ class FakeClient:
     def __init__(self) -> None:
         self.dirs: list[str] = []
         self.deleted: list[list[str]] = []
+        # 入库体检会列目录：默认给一个像样的游戏压缩包
+        self.files: list[dict] = [{"server_filename": "game.rar", "isdir": 0, "size": 7_460_000_000}]
 
     def require_login(self) -> "FakeClient":
         return self
@@ -112,7 +114,7 @@ class FakeClient:
         return remote_dir
 
     def list_dir(self, remote_dir: str, page: int = 1, num: int = 1000) -> list[dict]:
-        return [{"server_filename": "x.png"}]
+        return list(self.files)
 
     def delete(self, paths) -> bool:
         self.deleted.append(list(paths))
@@ -258,6 +260,68 @@ class CloudSaverRouteTest(unittest.TestCase):
         result = self.saver.save_direct("https://zd.shinnku.top/file/unknown.rar", "不明サイズ")
         self.assertTrue(result.ok, result.error)
         self.assertEqual(len(self.saver._downloader.downloaded), 1)
+
+    def test_junk_share_is_deleted_and_rejected(self) -> None:
+        # 实测踩到的诱饵：转存下来全是教学视频，一个游戏文件都没有
+        def listing(remote_dir: str, page: int = 1, num: int = 1000) -> list[dict]:
+            if remote_dir.endswith("第19讲"):
+                return [
+                    {"server_filename": "1【安卓】.mp4", "isdir": 0, "size": 1_800_000_000},
+                    {"server_filename": "2【PC】.mp4", "isdir": 0, "size": 9_020_000_000},
+                ]
+            return [{"server_filename": "第19讲", "isdir": 1, "size": 0}]
+
+        self.saver._client.list_dir = listing
+        result = self.saver.save_share("https://pan.baidu.com/s/1junk?pwd=x", "/gal_save/v1 千恋＊万花", "千恋＊万花")
+        self.assertFalse(result.ok)
+        self.assertIn("不是游戏本体", result.error)
+        # 诱饵目录要整棵删掉，别占着 4TB 的额度
+        self.assertIn(["/gal_save/v1 千恋＊万花/千恋＊万花"], self.saver._client.deleted)
+
+    def test_multiplatform_share_keeps_only_pc(self) -> None:
+        def listing(remote_dir: str, page: int = 1, num: int = 1000) -> list[dict]:
+            if remote_dir.endswith("PC版"):
+                return [
+                    {"server_filename": "game.iso", "isdir": 0, "size": 7_000_000_000},
+                    {"server_filename": "data.xp3", "isdir": 0, "size": 3_500_000_000},
+                ]
+            if remote_dir.endswith("安卓直装"):
+                return [{"server_filename": "game.apk", "isdir": 0, "size": 4_000_000_000}]
+            return [
+                {"server_filename": "PC版", "isdir": 1, "size": 0},
+                {"server_filename": "安卓直装", "isdir": 1, "size": 0},
+            ]
+
+        self.saver._client.list_dir = listing
+        result = self.saver.save_share("https://pan.baidu.com/s/1multi?pwd=y", "/gal_save/v1 x", "x")
+        self.assertTrue(result.ok, result.error)
+        self.assertIn(["/gal_save/v1 x/x/安卓直装"], self.saver._client.deleted)
+
+    def test_small_share_is_not_pruned(self) -> None:
+        self.saver._client.files = [{"server_filename": "game.rar", "isdir": 0, "size": 2_000_000_000}]
+        result = self.saver.save_share("https://pan.baidu.com/s/1small?pwd=z", "/gal_save/v2 y", "y")
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(self.saver._client.deleted, [])
+
+    def test_prune_can_be_disabled(self) -> None:
+        self.saver.prune_enabled = False
+        self.saver._client.files = [{"server_filename": "a.mp4", "isdir": 0, "size": 9_000_000_000}]
+        result = self.saver.save_share("https://pan.baidu.com/s/1off?pwd=w", "/gal_save/v3 z", "z")
+        self.assertTrue(result.ok, result.error)
+
+    def test_course_titled_share_skipped(self) -> None:
+        class CourseTransfer(FakeTransfer):
+            def parse(self, link: str) -> dict:
+                return {"shareid": "1", "share_uk": "2", "files": [
+                    {"fs_id": 1, "server_filename": "2026真实U3D脚本拆解实践班直播第19讲",
+                     "isdir": 1, "size": 0},
+                ]}
+
+        with mock.patch.object(cloud_mod, "ShareTransfer", CourseTransfer):
+            result = self.saver.save_share(
+                "https://pan.baidu.com/s/1course?pwd=q", "/gal_save/v9 x", "千恋＊万花")
+        self.assertFalse(result.ok)
+        self.assertIn("课程/资料", result.error)
 
     def test_size_out_of_range_rejected(self) -> None:
         res = Resource(site="ggbase", source_type=SOURCE_MAGNET, title="x",

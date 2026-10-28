@@ -136,6 +136,27 @@ def run_selftest() -> int:
 
     checks.append(("VNDB 名字优先取日文原名", preferred_name))
 
+    # 入库体检：课程标题的诱饵分享能认出来，多平台包只删安卓/iOS
+    def prune_rules() -> bool:
+        from .prune import Entry, classify_name, looks_like_bait, plan_prune
+
+        if not looks_like_bait("2026真实U3D脚本拆解实践班直播第19讲"):
+            return False
+        if looks_like_bait("千恋＊万花"):
+            return False
+        if classify_name("安卓直装") != "android" or classify_name("PC版") != "pc":
+            return False
+        entries = [
+            Entry("PC版", "PC版", True, 0),
+            Entry("PC版/game.iso", "game.iso", False, 6_000_000_000),
+            Entry("安卓直装", "安卓直装", True, 0),
+            Entry("安卓直装/game.apk", "game.apk", False, 4_000_000_000),
+        ]
+        report = plan_prune(entries, threshold_gb=9.0)
+        return report.ok and [e.rel for e in report.drop] == ["安卓直装"]
+
+    checks.append(("入库体检：诱饵分享识别 + 多平台只留 PC", prune_rules))
+
     results = [_check(name, fn) for name, fn in checks]
 
     failures = 0

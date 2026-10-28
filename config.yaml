@@ -32,6 +32,12 @@ concurrency_per_vn: 3
 min_resource_gb: 0.3
 max_resource_gb: 60
 
+# 入库后体检（转存完先列目录再看内容）
+prune:
+  enabled: true
+  # 单部超过这个体积就当成多平台合集，只保留 PC 端文件（安卓/iOS/KRKR/Tyranor 全删）
+  threshold_gb: 9
+
 vndb:
   base_url: https://api.vndb.org/kana
   timeout: 30
