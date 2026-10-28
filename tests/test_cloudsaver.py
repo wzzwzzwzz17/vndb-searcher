@@ -274,7 +274,7 @@ class CloudSaverRouteTest(unittest.TestCase):
         self.assertTrue(result.ok, result.error)
         self.assertEqual(result.route, SOURCE_DIRECT)
         # 记的是目录（和转存同口径），不是加密包的文件名
-        self.assertEqual(result.cloud_path, "/gal_save/戦国ランス")
+        self.assertEqual(result.cloud_path, "戦国ランス")
         # 上传的应该是加密后的 .png，不是原始 .rar
         self.assertEqual(len(FakeUploader.uploaded), 1)
         uploaded_local = Path(FakeUploader.uploaded[0][0])
