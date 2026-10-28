@@ -176,6 +176,7 @@ class TaskDB:
         """删掉一条入库记录（内容判为诱饵、删了云端目录之后用），返回是否删到了。"""
         with self._lock:
             cur = self._conn.execute("DELETE FROM done WHERE vndb_id = ?", (str(vndb_id),))
+            self._conn.commit()
             return cur.rowcount > 0
 
     # ---------- 已知坏链接 ----------

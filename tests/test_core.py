@@ -86,6 +86,19 @@ class DbTest(unittest.TestCase):
         self.assertFalse(self.db.is_done("v9"))
         self.assertFalse(self.db.forget_done("v9"))
 
+    def test_forget_done_persists(self) -> None:
+        """删了要真落盘——曾经漏了 commit，删完重启又冒出来。"""
+        path = Path(self._tmp.name) / "p.db"
+        db = TaskDB(path)
+        db.mark_done("v9", 8.0, "A", "share", "kungal", "l", "/p", 1.0)
+        self.assertTrue(db.forget_done("v9"))
+        db.close()
+        again = TaskDB(path)
+        try:
+            self.assertEqual(again.count_done(), 0)
+        finally:
+            again.close()
+
     def test_mark_done_and_total(self) -> None:
         self.db.mark_done("v1", 8.5, "A", "magnet", "ggbase", "magnet:?xt=1", "/a", 12.5)
         self.db.mark_done("v2", 7.0, "B", "share", "kungal", "link", "/b", 7.5)
