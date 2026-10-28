@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Callable
@@ -19,6 +20,8 @@ from ..logger import get_logger
 CHUNK = 1024 * 1024
 MIN_FREE_GB = 8.0
 GB_BYTES = 1000 ** 3  # 与网盘/方案文档一致，按十进制 GB 算
+# aria2 分段连接数：单连接实测只有 1.5MB/s，分段能快好几倍
+ARIA2_CONNECTIONS = 8
 
 
 class DownloadError(RuntimeError):
@@ -30,6 +33,7 @@ class DirectDownloader:
         self.cfg = cfg
         self.log = get_logger()
         self.timeout = float(cfg.get("crawler", {}).get("timeout") or 30)
+        self.use_aria2 = bool(cfg.get("crawler", {}).get("aria2_direct", False))
         self.tmp_dir = Path(tmp_dir) if tmp_dir else self._default_tmp()
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
         self.session = requests.Session()
@@ -43,6 +47,64 @@ class DirectDownloader:
     @staticmethod
     def _default_tmp() -> Path:
         return Path(__file__).resolve().parent.parent / "data" / "tmp"
+
+    # ---------- aria2 分段下载（快，且自带断点续传） ----------
+    def _aria2_binary(self) -> str:
+        from .torrent import Aria2Downloader
+
+        resolved = Aria2Downloader(self.cfg).binary
+        return resolved if resolved and Path(resolved).exists() else ""
+
+    def _download_aria2(self, url: str, target: Path, referer: str,
+                        retries: int, progress: Callable[[int, int], None] | None) -> bool:
+        """用 aria2 分段下到 target，成功返回 True。
+
+        单连接实测 1.5MB/s（400MB 要 4 分钟），分段 8 路能快数倍；aria2 自己维护
+        `.aria2` 控制文件做断点续传，和 requests 那套 `.part` 互不干扰。
+        """
+        binary = self._aria2_binary()
+        if not binary:
+            return False
+        cmd = [
+            binary,
+            f"--dir={self.tmp_dir}",
+            f"--out={target.name}",
+            f"--max-connection-per-server={ARIA2_CONNECTIONS}",
+            f"--split={ARIA2_CONNECTIONS}",
+            "--min-split-size=1M",
+            "--continue=true",
+            "--auto-file-renaming=false",
+            "--allow-overwrite=true",
+            "--file-allocation=none",
+            "--summary-interval=0",
+            "--console-log-level=warn",
+            "--retry-wait=5",
+            "--max-tries=%d" % max(1, retries),
+            "--connect-timeout=%d" % int(self.timeout),
+        ]
+        if referer:
+            cmd.append(f"--referer={referer}")
+        cmd.append(url)
+
+        self.log.info("用 aria2 分段下载（%d 连接）: %s", ARIA2_CONNECTIONS, target.name)
+        started = time.time()
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as exc:
+            self.log.warning("aria2 起不来（%s），退回单连接下载", exc)
+            return False
+        while proc.poll() is None:
+            time.sleep(3)
+            if progress and target.exists():
+                progress(target.stat().st_size, 0)
+        if proc.returncode != 0:
+            self.log.warning("aria2 退出码 %s（文件 %s 字节）", proc.returncode,
+                             target.stat().st_size if target.exists() else 0)
+        if not target.exists() or target.stat().st_size <= 0:
+            return False
+        self.log.info("aria2 下载完成：%s（%.2fGB，%.0fs）", target.name,
+                      target.stat().st_size / GB_BYTES, time.time() - started)
+        return True
 
     def probe(self, url: str, referer: str = "") -> tuple[int, bool]:
         """只看响应头，返回 (字节数, 是否支持续传)；拿不到就返回 (0, False)。
@@ -82,6 +144,18 @@ class DirectDownloader:
         part = target.with_suffix(target.suffix + ".part")
 
         self._check_space(target)
+
+        # 有 aria2 就先用它分段下（快）；它自己会接着上次的 .aria2 控制文件续传，
+        # 而 requests 那套 .part 半成品只能由 requests 自己续，两者不混用。
+        control = target.with_suffix(target.suffix + ".aria2")
+        if self.use_aria2 and not part.exists() and not control.exists():
+            expected, _accepts = self.probe(url, referer=referer)
+            if self._download_aria2(url, target, referer, retries, progress):
+                got = target.stat().st_size
+                if not expected or got == expected:
+                    return target
+                self.log.warning("aria2 下到 %d 字节，HEAD 说 %d，删掉重来核对", got, expected)
+                target.unlink(missing_ok=True)
 
         base_headers = {"Referer": referer} if referer else {}
         last_error: Exception | None = None

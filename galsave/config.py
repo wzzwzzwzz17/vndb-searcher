@@ -51,6 +51,9 @@ DEFAULTS: dict[str, Any] = {
         "max_pages": 2,
         "proxy": "",
         "allow_collection": False,
+        # 直链用 aria2 分段下载：实测本校校园网单机约 1.5MB/s，分 8 路没有收益，
+        # 只有线路不限速时才值得打开
+        "aria2_direct": False,
     },
     "baidu": {
         "root_dir": "/gal_save",

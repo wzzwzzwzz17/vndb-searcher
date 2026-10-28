@@ -209,10 +209,23 @@ class CloudSaver:
                 return SaveResult(False, "share", site,
                                   error=f"分享是试玩版（{demo}），不是完整游戏，跳过",
                                   detail=link[:200])
+            # 转存前就按文件清单判一次：凡是明摆着的课程/视频包，不占转存次数
+            # （百度连打十几条转存就会限流，把额度留给可能是游戏的分享）
+            early = self._precheck_share(info)
+            if early:
+                if "未知格式" not in early:
+                    self.db.add_bad_link(link, early)
+                return SaveResult(False, "share", site,
+                                  error=f"分享内容不是游戏本体（{early}），跳过",
+                                  detail=link[:200])
             result = transfer.transfer(link, folder, info=info)
             result["cloud_path"] = folder
         except BaiduError as exc:
             self._remove_if_empty(folder)
+            # 31066 = 分享里没有可转存的文件（实测大量失效/空壳分享都回这个），
+            # -9 / 105 = 链接失效。记进 bad_link，下次直接跳过，别每小时重复探测
+            if exc.errno in (31066, -9, 105):
+                self.db.add_bad_link(link, f"分享已失效（{exc.errno}）")
             return SaveResult(False, "share", site, error=str(exc))
         self._flatten(folder)
         cloud_path = str(result.get("cloud_path") or "")
@@ -314,6 +327,20 @@ class CloudSaver:
             return names[0][:40]
         return ""
 
+    def _precheck_share(self, info: dict[str, Any]) -> str:
+        """按分享页的文件清单先判一次，返回不能入库的原因（空串表示可以转存）。
+
+        只在「根目录全是文件（没有子目录）」时判断：有子目录时分享页给不出
+        子树体积，判了容易误杀（例如分卷包放在 `10/` 里那种）。
+        """
+        from .prune import check_game_like, make_entries
+
+        files = list(info.get("files") or [])
+        if not files or any(int(it.get("isdir") or 0) for it in files):
+            return ""
+        report = check_game_like(make_entries(files))
+        return "" if report.ok else report.reason
+
     def inspect_and_prune(self, folder: str) -> Any:
         """列一遍入库目录：不是游戏本体就整目录删掉；多平台包只留 PC。
 
@@ -392,10 +419,10 @@ class CloudSaver:
                 self.log.warning("清理本地文件失败 %s: %s", path, exc)
 
     def cleanup_tmp(self) -> int:
-        """清掉上次中断留下的临时文件（`.part` 保留，下次还能续传）。"""
+        """清掉上次中断留下的临时文件（`.part` / `.aria2` 保留，下次还能续传）。"""
         removed = 0
         for path in self._downloader.tmp_dir.glob("*"):
-            if path.is_file() and not path.name.endswith(".part"):
+            if path.is_file() and not path.name.endswith((".part", ".aria2")):
                 try:
                     path.unlink()
                     removed += 1

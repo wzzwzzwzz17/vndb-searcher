@@ -30,6 +30,8 @@ GAME_EXTS = {
 # 明显不是游戏本体的东西
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".flv", ".rmvb", ".rm", ".webm", ".ts", ".m4v", ".mov"}
 DOC_EXTS = {".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".txt", ".csv", ".chm"}
+# 手机安装包：分享里只有这些说明不是 PC 版（实测 Muv-Luv 那条 2.6GB 就一个 .apk）
+MOBILE_EXTS = {".apk", ".xapk", ".ipa", ".obb", ".aab"}
 
 # 分卷压缩包的后缀不是 .7z 而是 .7z.001 / .part1.rar / .r00 / .z01
 # 实测 Rance Ⅹ 的汉化版就是 Rance10_CN.7z.001~.004，早期版本当成"未知格式"误删了
@@ -193,6 +195,11 @@ def check_game_like(entries: Iterable[Entry]) -> Report:
     if total <= 0:
         rep.reason = "分享是空的（没有文件）"
         return rep
+    if game == 0 and junk == 0:
+        mobile = sum(e.size for e in files if e.suffix in MOBILE_EXTS)
+        if mobile and mobile == total:
+            rep.reason = "只有安卓/iOS 安装包，不是 PC 版"
+            return rep
     if game > 0 and game / total >= 0.3:
         rep.ok = True
         rep.reason = f"游戏文件占 {game / total:.0%}"

@@ -50,6 +50,7 @@ class Scheduler:
         self.stats = {"success": 0, "failed": 0, "skipped": 0, "vns": 0}
         self.offline_ok = True
         self.magnet_ok = True  # 磁力能不能真交给网盘离线（实测百度已不支持，会变成 False）
+        self.share_ok = True  # 转存被限流（errno 4）后本轮置 False
         self.c_ok = True
         # 命令行 --skip 指定的来源，整轮都不碰（比如 --skip direct 就完全不占校园流量）
         self.skip_types: set[str] = set()
@@ -291,6 +292,11 @@ class Scheduler:
                 self.log.warning("账号不支持离线下载，后续只用 share/direct")
             if "配额" in str(result.error):
                 self.c_ok = False
+            if "请求过于频繁" in str(result.error) or "被限流" in str(result.error):
+                # 实测连续转存十几条就会回 errno 4，这时候继续打只会更糟；
+                # 本轮不再碰转存，剩下的交给 direct/magnet，下一轮再试
+                self.share_ok = False
+                self.log.warning("百度转存被限流，本轮不再尝试转存（下次运行会自动恢复）")
             self.db.add_retry(vn.id, result.route, res.site, result.error, self.max_retry)
 
         self.stats["failed"] += 1
@@ -318,6 +324,8 @@ class Scheduler:
         allow = []
         for source in priority:
             if source in self.skip_types:
+                continue
+            if source == SOURCE_SHARE and not self.share_ok:
                 continue
             if source == SOURCE_DIRECT and (not self.c_ok or self.saver.c_remaining_gb() <= 0):
                 if self.saver.c_remaining_gb() <= 0:
