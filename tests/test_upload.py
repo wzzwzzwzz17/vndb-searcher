@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""分片上传：block_list 必须走 body（放 query 会 HTTP 414），大文件要自动放大分片。"""
+"""分片上传：block_list 只能走 query（放 body 会让分片被掐断，放太长会 HTTP 414），大文件要自动放大分片。"""
 
 from __future__ import annotations
 
@@ -124,6 +124,24 @@ class UploadTest(unittest.TestCase):
         session = upload_mod._loose_ssl_session(client)  # type: ignore[arg-type]
         self.assertEqual(session.trust_env, client.session.trust_env)  # 跟随主会话的代理设置
         session.close()
+
+    def test_parallel_chunks_all_uploaded_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "p.bin"
+            path.write_bytes(b"\x03" * (8 * 1024 * 1024))
+            client = FakeClient()
+            seen: list[str] = []
+            progress: list[tuple[int, int]] = []
+
+            def fake_post_chunk(cl, url, params, files, attempt):
+                seen.append(params["partseq"])
+                return cl.session.post(url, params=params, files=files)
+
+            with mock.patch.object(upload_mod, "_post_chunk", fake_post_chunk):
+                Uploader(client, chunk_mb=1, parallel=3).upload(  # type: ignore[arg-type]
+                    path, "/gal_save/v1 名", progress=lambda d, t: progress.append((d, t)))
+        self.assertEqual(sorted(seen), [str(i) for i in range(8)])  # 每片正好一次，没漏没重
+        self.assertEqual(progress[-1], (8, 8))
 
     def test_chunk_md5s_matches_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

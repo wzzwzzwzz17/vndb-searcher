@@ -10,6 +10,7 @@ C 直链 → 本地下载 → AES-GCM 加密改 .png → 分片上传（占校�
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -289,7 +290,12 @@ class CloudSaver:
 
         try:
             self.client.ensure_dir(folder)
-            uploader = Uploader(self.client, int((self.cfg.get("baidu") or {}).get("upload_chunk_mb") or 4))
+            bcfg = self.cfg.get("baidu") or {}
+            uploader = Uploader(
+                self.client,
+                int(bcfg.get("upload_chunk_mb") or 4),
+                int(bcfg.get("upload_parallel") or 3),
+            )
             remote_path = uploader.upload(payload, folder)
             if not uploader.verify(remote_path, payload.stat().st_size):
                 raise BaiduError(-1, "上传后体积校验不一致", "百度上传")
@@ -418,16 +424,25 @@ class CloudSaver:
             except OSError as exc:
                 self.log.warning("清理本地文件失败 %s: %s", path, exc)
 
-    def cleanup_tmp(self) -> int:
-        """清掉上次中断留下的临时文件（`.part` / `.aria2` 保留，下次还能续传）。"""
+    def cleanup_tmp(self, min_age_hours: float = 6.0) -> int:
+        """清掉上次中断留下的临时文件。
+
+        `.part` / `.aria2` 一律保留（下次还能续传）；新建不到 `min_age_hours`
+        的文件也不动——否则会误删正在跑的另一条流水线下的文件，甚至是放在
+        tmp 里的探针脚本。
+        """
         removed = 0
+        cutoff = time.time() - max(0.0, min_age_hours) * 3600
         for path in self._downloader.tmp_dir.glob("*"):
-            if path.is_file() and not path.name.endswith((".part", ".aria2")):
-                try:
-                    path.unlink()
-                    removed += 1
-                except OSError:
-                    pass
+            if not path.is_file() or path.name.endswith((".part", ".aria2")):
+                continue
+            try:
+                if path.stat().st_mtime > cutoff:
+                    continue
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
         return removed
 
 

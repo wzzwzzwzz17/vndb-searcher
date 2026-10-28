@@ -71,6 +71,8 @@ baidu:
   folder_pattern: "v{id} {name}"
   # 分片上传大小（MB），百度网盘网页版用 4MB
   upload_chunk_mb: 4
+  # 同时传几个分片：单连接约 1.7MB/s，3 路实测能翻倍
+  upload_parallel: 3
   app_id: "250528"
   # 转存/离线连续操作之间的间隔（秒），避免被风控
   interval: 1.5

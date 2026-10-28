@@ -87,8 +87,9 @@ class FakeTransfer:
 class FakeUploader:
     uploaded: list[tuple[str, str]] = []
 
-    def __init__(self, client, chunk_mb: int = 4):
+    def __init__(self, client, chunk_mb: int = 4, parallel: int = 3):
         self.chunk_mb = chunk_mb
+        self.parallel = parallel
 
     def upload(self, local_path, remote_dir: str, progress=None) -> str:
         FakeUploader.uploaded.append((str(local_path), f"{remote_dir}/x.png"))

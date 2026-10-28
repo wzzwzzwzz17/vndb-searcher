@@ -60,6 +60,8 @@ DEFAULTS: dict[str, Any] = {
         # 所有作品都放在 root_dir 下，一部件一个目录，名字统一带 VNDB 编号
         "folder_pattern": "v{id} {name}",
         "upload_chunk_mb": 4,
+        # 上传并发分片数：百度单连接约 1.7MB/s，3 路实测能翻倍
+        "upload_parallel": 3,
         "app_id": "250528",
         "interval": 1.5,
         # 磁力：百度已不收离线，默认用本机 aria2 下载再加密上传

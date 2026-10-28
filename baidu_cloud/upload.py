@@ -13,9 +13,11 @@ Web 端上传三步（2026-10 实测）：
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import mimetypes
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -61,9 +63,10 @@ def chunk_md5s(path: str | Path, chunk_size: int) -> list[str]:
 
 
 class Uploader:
-    def __init__(self, client: BaiduClient, chunk_mb: int = CHUNK_MB):
+    def __init__(self, client: BaiduClient, chunk_mb: int = CHUNK_MB, parallel: int = 3):
         self.client = client
         self.chunk_size = max(1, int(chunk_mb)) * 1024 * 1024
+        self.parallel = max(1, int(parallel or 1))
         self.log = _logger()
 
     def upload(self, local_path: str | Path, remote_dir: str,
@@ -125,55 +128,75 @@ class Uploader:
     def _upload_chunks(self, path: Path, remote_path: str, upload_id: str, chunks: int,
                        chunk_size: int,
                        progress: Callable[[int, int], None] | None) -> None:
+        """并发传分片。实测百度单连接约 1.7MB/s，3 路能到 4MB/s 上下。"""
         url = f"{PCS}/rest/2.0/pcs/superfile2"
         mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        total = path.stat().st_size
+        jobs = []
+        for seq in range(chunks):
+            offset = seq * chunk_size
+            length = min(chunk_size, total - offset)
+            if length <= 0:
+                break
+            params = {
+                "method": "upload",
+                "type": "tmpfile",
+                "path": remote_path,
+                "uploadid": upload_id,
+                "partseq": str(seq),
+                "app_id": APP_ID,
+            }
+            jobs.append((seq, offset, length, params))
+
         done = 0
-        with open(path, "rb") as handle:
-            for seq in range(chunks):
-                offset = seq * chunk_size
-                handle.seek(offset)
-                length = min(chunk_size, path.stat().st_size - offset)
-                if length <= 0:
-                    break
-                params = {
-                    "method": "upload",
-                    "type": "tmpfile",
-                    "path": remote_path,
-                    "uploadid": upload_id,
-                    "partseq": str(seq),
-                    "app_id": APP_ID,
-                }
-                last_error: Exception | None = None
-                for attempt in range(1, CHUNK_RETRIES + 1):
-                    handle.seek(offset)
-                    files = {"file": ("blob", _BoundedReader(handle, length), mime)}
-                    try:
+        lock = threading.Lock()
+
+        def task(job: tuple[int, int, int, dict]) -> None:
+            seq, offset, length, params = job
+            last_error: Exception | None = None
+            for attempt in range(1, CHUNK_RETRIES + 1):
+                try:
+                    with open(path, "rb") as handle:  # 每个线程自己的句柄
+                        handle.seek(offset)
+                        files = {"file": ("blob", _BoundedReader(handle, length), mime)}
                         resp = _post_chunk(self.client, url, params, files, attempt)
-                    except Exception as exc:  # noqa: BLE001 - 传输层什么都可能抛
-                        last_error = exc
-                        self.log.warning("第 %d 片第 %d 次上传中断：%s", seq, attempt, exc)
-                        time.sleep(min(30, 2 * attempt))
-                        continue
-                    if resp.status_code != 200:
-                        last_error = BaiduError(-1, f"分片 {seq} 上传失败 HTTP {resp.status_code}", "百度上传")
-                        time.sleep(2 * attempt)
-                        continue
-                    try:
-                        data = resp.json()
-                    except ValueError:
-                        data = {}
-                    if data.get("errno") not in (None, 0, "0"):
-                        last_error = BaiduError(data.get("errno"), f"第 {seq} 片上传失败", "百度上传")
-                        time.sleep(2 * attempt)
-                        continue
-                    last_error = None
-                    break
-                if last_error is not None:
-                    raise last_error if isinstance(last_error, BaiduError) else BaiduError(
-                        -1, f"第 {seq} 片上传失败：{last_error}", "百度上传")
-                done += 1
-                if progress:
-                    progress(done, chunks)
+                except Exception as exc:  # noqa: BLE001 - 传输层什么都可能抛
+                    last_error = exc
+                    self.log.warning("第 %d 片第 %d 次上传中断：%s", seq, attempt, exc)
+                    time.sleep(min(30, 2 * attempt))
+                    continue
+                if resp.status_code != 200:
+                    last_error = BaiduError(-1, f"分片 {seq} 上传失败 HTTP {resp.status_code}", "百度上传")
+                    time.sleep(2 * attempt)
+                    continue
+                try:
+                    data = resp.json()
+                except ValueError:
+                    data = {}
+                if data.get("errno") not in (None, 0, "0"):
+                    last_error = BaiduError(data.get("errno"), f"第 {seq} 片上传失败", "百度上传")
+                    time.sleep(2 * attempt)
+                    continue
+                last_error = None
+                break
+            if last_error is not None:
+                raise last_error if isinstance(last_error, BaiduError) else BaiduError(
+                    -1, f"第 {seq} 片上传失败：{last_error}", "百度上传")
+
+        workers = min(self.parallel, len(jobs)) or 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(task, job): job for job in jobs}
+            try:
+                for future in concurrent.futures.as_completed(futures):
+                    future.result()
+                    with lock:
+                        done += 1
+                        if progress:
+                            progress(done, len(jobs))
+            except Exception:
+                for future in futures:
+                    future.cancel()
+                raise
 
     def _create(self, remote_path: str, size: int, upload_id: str, chunks: int,
                 block_list: list[str]) -> None:
