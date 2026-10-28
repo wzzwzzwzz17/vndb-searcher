@@ -51,6 +51,8 @@ class Scheduler:
         self.offline_ok = True
         self.magnet_ok = True  # 磁力能不能真交给网盘离线（实测百度已不支持，会变成 False）
         self.c_ok = True
+        # 命令行 --skip 指定的来源，整轮都不碰（比如 --skip direct 就完全不占校园流量）
+        self.skip_types: set[str] = set()
 
     # ---------- 上限 ----------
     def total_gb(self) -> float:
@@ -305,10 +307,13 @@ class Scheduler:
 
         磁力永远保留：即便网盘不收磁力离线（实测 36001），也仍然把磁力登记到
         magnet_pending，方便之后用本地 BT 客户端或其它方式处理。
+        `skip_types` 是命令行强制跳过的来源（比如只想用转存、完全不碰校园流量）。
         """
         priority = list(self.cfg.get("source_priority") or ["share", "direct", "magnet"])
         allow = []
         for source in priority:
+            if source in self.skip_types:
+                continue
             if source == SOURCE_DIRECT and (not self.c_ok or self.saver.c_remaining_gb() <= 0):
                 if self.saver.c_remaining_gb() <= 0:
                     self.log.warning("C 源本批配额已用完，暂时不下载直链。换批可执行: python -m galsave quota --reset")

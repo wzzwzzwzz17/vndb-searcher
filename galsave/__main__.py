@@ -165,6 +165,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.buckets:
         buckets = [float(x) for x in str(args.buckets).replace(" ", "").split(",") if x]
     scheduler = Scheduler(cfg)
+    if args.skip:
+        skip = {x.strip() for x in str(args.skip).replace("，", ",").split(",") if x.strip()}
+        bad = skip - {"share", "direct", "magnet"}
+        if bad:
+            print(f"未知来源: {'、'.join(sorted(bad))}（只能是 share / direct / magnet）")
+            return 2
+        scheduler.skip_types = skip
+        print(f"本轮跳过来源: {'、'.join(sorted(skip))}")
     summary = scheduler.run(buckets=buckets, max_vns=args.max_vns, skip_retries=args.no_retries)
     print(f"\n本次成功 {summary['success']} 部，失败 {summary['failed']} 部，"
           f"累计 {summary['total_gb']:.2f}GB / {summary['entries']} 部")
@@ -322,6 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--buckets", help="只跑指定分数档，如 8.0,7.5")
     p_run.add_argument("--max-vns", type=int, default=0, help="本次最多处理几部（0=不限）")
     p_run.add_argument("--no-retries", action="store_true", help="跳过重试队列")
+    p_run.add_argument("--skip", help="本轮跳过的来源，逗号分隔：share,direct,magnet（--skip direct 就完全不占校园流量）")
     p_run.set_defaults(func=cmd_run)
 
     p_quota = sub.add_parser("quota", help="查网盘容量")

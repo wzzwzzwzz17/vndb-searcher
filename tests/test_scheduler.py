@@ -188,5 +188,12 @@ class SchedulerDecisionTest(unittest.TestCase):
                 raise StopFull
 
 
+    def test_skip_types_removes_requested_sources(self) -> None:
+        self.sched.skip_types = {SOURCE_DIRECT}
+        self.assertEqual(self.sched._allow_types(), [SOURCE_SHARE, SOURCE_MAGNET])
+        self.sched.skip_types = {SOURCE_SHARE, SOURCE_DIRECT, SOURCE_MAGNET}
+        self.assertEqual(self.sched._allow_types(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -262,6 +262,7 @@ python -m galsave plan --pages 3     # 各评分档还有多少部没捞
 python -m galsave dryrun "ランス10"  # 只搜不下载，看三站各命中什么
 python -m galsave run                # 正式跑
 python -m galsave run --buckets 8.0 7.5 --max-vns 20
+python -m galsave run --skip direct   # 这一轮完全不下载直链（不占校园流量，只做转存）
 python -m galsave quota              # 只看 4TB / 500GB 配额
 python -m galsave quota --reset      # C 源 500GB 用完后换新的一批（配额清零，账不会丢）
 python -m galsave magnets --out magnets.txt   # 导出网盘收不了的磁力清单（自己用 BT 客户端处理）
