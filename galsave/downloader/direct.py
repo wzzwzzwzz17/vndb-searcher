@@ -145,6 +145,14 @@ class DirectDownloader:
 
         self._check_space(target)
 
+        # 上次已经完整下好的文件（例如上传失败留下的）直接复用，别再花一遍流量
+        if target.exists() and not part.exists():
+            expected_size, _accepts = self.probe(url, referer=referer)
+            got = target.stat().st_size
+            if expected_size and got == expected_size:
+                self.log.info("复用上次下好的文件：%s（%.2fGB）", target.name, got / 1e9)
+                return target
+
         # 有 aria2 就先用它分段下（快）；它自己会接着上次的 .aria2 控制文件续传，
         # 而 requests 那套 .part 半成品只能由 requests 自己续，两者不混用。
         control = target.with_suffix(target.suffix + ".aria2")

@@ -292,6 +292,10 @@ class Scheduler:
                 self.log.warning("账号不支持离线下载，后续只用 share/direct")
             if "配额" in str(result.error):
                 self.c_ok = False
+            if "上传失败" in str(result.error):
+                # 上传通道挂了还继续下直链，只会白花校园流量：本轮停掉直链
+                self.c_ok = False
+                self.log.warning("上传通道不可用，本轮不再下载直链（下好的文件留在 tmp，下轮复用）")
             if "请求过于频繁" in str(result.error) or "被限流" in str(result.error):
                 # 实测连续转存十几条就会回 errno 4，这时候继续打只会更糟；
                 # 本轮不再碰转存，剩下的交给 direct/magnet，下一轮再试

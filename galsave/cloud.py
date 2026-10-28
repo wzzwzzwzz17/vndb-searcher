@@ -271,9 +271,16 @@ class CloudSaver:
             return SaveResult(False, "direct", site,
                               error=f"本批 C 源配额只剩 {remaining:.2f}GB，这部要 {plain_gb:.2f}GB")
         try:
-            return self._encrypt_and_upload(local, folder, title, site, "direct", plain_gb)
-        finally:
+            result = self._encrypt_and_upload(local, folder, title, site, "direct", plain_gb)
+        except Exception:
             self._downloader.cleanup(local)
+            raise
+        if result.ok:
+            self._downloader.cleanup(local)
+        else:
+            # 上传失败时把原文件留在 tmp：下次重试直接复用，不用再花一遍校园流量
+            self.log.warning("本地文件保留在 %s，重试时会直接复用", local)
+        return result
 
     # ---------- 公共尾巴：加密 + 上传 ----------
     def _encrypt_and_upload(self, local: Path, folder: str, title: str, site: str,
@@ -291,14 +298,8 @@ class CloudSaver:
         try:
             self.client.ensure_dir(folder)
             bcfg = self.cfg.get("baidu") or {}
-            uploader = Uploader(
-                self.client,
-                int(bcfg.get("upload_chunk_mb") or 4),
-                int(bcfg.get("upload_parallel") or 3),
-            )
-            remote_path = uploader.upload(payload, folder)
-            if not uploader.verify(remote_path, payload.stat().st_size):
-                raise BaiduError(-1, "上传后体积校验不一致", "百度上传")
+            parallel = int(bcfg.get("upload_parallel") or 3)
+            remote_path = self._upload(payload, folder, parallel)
         except (BaiduError, OSError) as exc:
             if payload != local:
                 self._cleanup(payload)
@@ -312,6 +313,24 @@ class CloudSaver:
         # 记目录而不是文件：和转存路线保持同一个口径，reorg/体检都按目录走
         return SaveResult(True, route, site, cloud_path=folder,
                           size_gb=size_gb or plain_gb, detail=f"本地下载 {plain_gb:.2f}GB 已加密上传")
+
+    def _upload(self, payload: Path, folder: str, parallel: int) -> str:
+        """上传加密包；并发被重置时退回单连接再试一次。"""
+        bcfg = self.cfg.get("baidu") or {}
+        chunk_mb = int(bcfg.get("upload_chunk_mb") or 4)
+        last: Exception | None = None
+        for workers in ([parallel, 1] if parallel > 1 else [1]):
+            uploader = Uploader(self.client, chunk_mb, workers)
+            try:
+                remote_path = uploader.upload(payload, folder)
+                if not uploader.verify(remote_path, payload.stat().st_size):
+                    raise BaiduError(-1, "上传后体积校验不一致", "百度上传")
+                return remote_path
+            except (BaiduError, OSError) as exc:
+                last = exc
+                if workers > 1:
+                    self.log.warning("并发 %d 路上传失败（%s），退回单连接重试", workers, exc)
+        raise last if last is not None else BaiduError(-1, "上传失败", "百度上传")
 
     # ---------- 入库后体检 ----------
     def _bait_name(self, info: dict[str, Any]) -> str:

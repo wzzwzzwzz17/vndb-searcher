@@ -136,6 +136,38 @@ class DownloadResumeTest(unittest.TestCase):
             path = dl.download("https://cdn.example.com/game.zip", "game.zip", retries=3)
             self.assertEqual(path.read_bytes(), BODY)
 
+    def test_completed_file_is_reused_without_redownloading(self) -> None:
+        """上次下好但上传失败的文件，重试时不该再下一遍（省校园流量）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / safe_filename("game.zip")
+            target.write_bytes(BODY)
+
+            class HeadOnly(ScriptedSession):
+                def head(self, url, timeout=None, headers=None, allow_redirects=True):
+                    return FakeResp(200, {"Content-Length": str(len(BODY)),
+                                          "Accept-Ranges": "bytes"}, b"")
+
+            session = HeadOnly([])
+            dl = make_downloader(session, tmp)
+            path = dl.download("https://cdn.example.com/game.zip", "game.zip", retries=1)
+            self.assertEqual(path.read_bytes(), BODY)
+            self.assertEqual(session.calls, [])  # 一次 GET 都没发
+
+    def test_truncated_file_is_not_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / safe_filename("game.zip")
+            target.write_bytes(BODY[:1000])
+
+            class HeadOnly(ScriptedSession):
+                def head(self, url, timeout=None, headers=None, allow_redirects=True):
+                    return FakeResp(200, {"Content-Length": str(len(BODY))}, b"")
+
+            session = HeadOnly([lambda h: FakeResp(200, {"Content-Length": str(len(BODY))}, BODY)])
+            dl = make_downloader(session, tmp)
+            path = dl.download("https://cdn.example.com/game.zip", "game.zip", retries=1)
+            self.assertEqual(path.read_bytes(), BODY)  # 重新下完整
+            self.assertEqual(len(session.calls), 1)
+
     def test_all_attempts_broken_keeps_part(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             broken = lambda h: FakeResp(200, {"Content-Length": str(len(BODY))}, BODY, break_after=2048)  # noqa: E731

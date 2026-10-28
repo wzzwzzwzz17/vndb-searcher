@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from baidu_cloud.client import BaiduError
 from galsave import cloud as cloud_mod
 from galsave.cloud import CloudSaver
 from galsave.config import load_config
@@ -281,6 +282,37 @@ class CloudSaverRouteTest(unittest.TestCase):
         self.assertEqual(uploaded_local.suffix, ".png")
         self.assertFalse(uploaded_local.exists())  # 传完本地要清掉
         self.assertGreater(self.db.c_quota_used_gb(), 0)  # 直链占本地流量，要记配额
+
+    def test_upload_failure_keeps_local_file_for_retry(self) -> None:
+        """上传挂了别把下好的文件删了：下次重试要直接复用，别再花一遍校园流量。"""
+        class BrokenUploader(FakeUploader):
+            def upload(self, local_path, remote_dir: str, progress=None) -> str:
+                raise BaiduError(-1, "连接被重置", "百度上传")
+
+        with mock.patch.object(cloud_mod, "Uploader", BrokenUploader):
+            result = self.saver.save_direct("https://zd.shinnku.top/file/keep.rar", "作品")
+        self.assertFalse(result.ok)
+        self.assertIn("上传失败", result.error)
+        kept = list(Path(self.saver._downloader.tmp_dir).glob("*.rar"))
+        self.assertTrue(kept, "下好的原文件应留在 tmp 里等重试")
+
+    def test_parallel_upload_falls_back_to_single_connection(self) -> None:
+        attempts: list[int] = []
+
+        class FlakyUploader(FakeUploader):
+            def __init__(self, client, chunk_mb: int = 4, parallel: int = 3):
+                super().__init__(client, chunk_mb, parallel)
+                attempts.append(parallel)
+
+            def upload(self, local_path, remote_dir: str, progress=None) -> str:
+                if self.parallel > 1:
+                    raise BaiduError(-1, "并发连接被重置", "百度上传")
+                return super().upload(local_path, remote_dir, progress)
+
+        with mock.patch.object(cloud_mod, "Uploader", FlakyUploader):
+            result = self.saver.save_direct("https://zd.shinnku.top/file/f.rar", "作品")
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(attempts, [3, 1])  # 先并发，失败后退回单连接
 
     def test_direct_blocked_by_remaining_quota(self) -> None:
         # 这一批只剩 0.01GB，文件 40MB 也放不下
