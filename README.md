@@ -160,7 +160,7 @@ python -m baidu_cloud.auth login
 - 网页进程里填写的 Key 和 TouchGal Token 会写进当前进程的配置，同一台机器上后一次请求会盖住前一次。
 - 安卓版的 API Key 放在应用私有存储里，是明文，没有额外加密。
 - 简介和标签翻译依赖 DeepSeek，可能漏译、缩短或措辞不稳。
-- 没有自动化测试覆盖三种模式的全部筛选组合。模式规则有过手工核对；`galsave`（收藏库流水线）那一套有 79 个单元测试。
+- 没有自动化测试覆盖三种模式的全部筛选组合。模式规则有过手工核对；`galsave`（收藏库流水线）那一套有 83 个单元测试。
 - 安卓打包脚本只在 Windows 上试过，而且依赖本机已安装的 SDK，不是 Gradle 工程。
 
 ## 可以怎么优化
@@ -235,7 +235,7 @@ python -m galsave decrypt 某个文件.png --out real.rar   # 解回本地下载
 ### 数据与测试
 
 - 数据库：`galsave/data/task.db`（`done` / `retry` / `runtime_meta` / `vn_seen` 四张表），日志：`galsave/logs/galsave.log`（4 MB 轮转 5 份）。
-- 测试：`python -m unittest discover -s tests -t .`（79 项，全部离线夹具，不联网）。
+- 测试：`python -m unittest discover -s tests -t .`（83 项，全部离线夹具，不联网）。
 
 ### 已知局限
 

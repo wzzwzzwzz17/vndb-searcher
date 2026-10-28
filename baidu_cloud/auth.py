@@ -96,8 +96,33 @@ def _launch_browser(p):
     return None, reasons
 
 
+def _cookie_map(cookies: list[dict[str, str]]) -> dict[str, str]:
+    return {c["name"]: c["value"] for c in cookies if c.get("name") and c.get("value")}
+
+
+def _logged_in_cookies(context, page) -> list[dict[str, str]]:
+    """登录完成的判据。
+
+    只看 BDUSS 会误判：刚扫码、还没跳进网盘时页面就已经种下 BDUSS，但 STOKEN 和
+    其余 Cookie 要等跳转后才下发。所以要求 BDUSS 之外，还要有 STOKEN，或者页面已经
+    进到 /disk/home。
+    """
+    cookies = context.cookies(PAN_HOME)
+    names = _cookie_map(cookies)
+    if not names.get("BDUSS"):
+        return []
+    url = ""
+    try:
+        url = page.url or ""
+    except Exception:  # noqa: BLE001 - 页面可能已被用户关掉
+        url = ""
+    if names.get("STOKEN") or "disk/home" in url:
+        return cookies
+    return []
+
+
 def _login_with_playwright(timeout: int = LOGIN_TIMEOUT_SECONDS) -> bool:
-    """弹出有界面的浏览器窗口，用户手动登录，检测到 BDUSS 后自动保存。"""
+    """弹出有界面的浏览器窗口，用户手动登录；确认登录态真的可用后保存并关窗。"""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -117,22 +142,31 @@ def _login_with_playwright(timeout: int = LOGIN_TIMEOUT_SECONDS) -> bool:
             page = context.new_page()
             page.goto(PAN_HOME)
             deadline = time.time() + timeout
+            noticed = False
             while time.time() < deadline:
-                bd = next(
-                    (c for c in context.cookies(PAN_HOME) if c.get("name") == "BDUSS" and c.get("value")),
-                    None,
-                )
-                if bd:
-                    _save(context.cookies(PAN_HOME))
-                    print("检测到登录成功（BDUSS），窗口即将关闭。")
-                    browser.close()
-                    return True
+                cookies = _logged_in_cookies(context, page)
+                if cookies:
+                    # 登录刚完成时 Cookie 还在陆续下发，等一下再整体保存
+                    time.sleep(2)
+                    cookies = _logged_in_cookies(context, page) or cookies
+                    _save(cookies)
+                    if verify():
+                        print("登录成功，窗口即将关闭。")
+                        browser.close()
+                        return True
+                    print("Cookie 已保存，但接口还不认这次登录。请在窗口里再点一次「进入网盘」，继续等待…")
+                    clear_credentials()
+                    time.sleep(3)
+                    continue
+                if not noticed and _cookie_map(context.cookies(PAN_HOME)).get("BDUSS"):
+                    noticed = True
+                    print("已经看到登录 Cookie，等你进入网盘主界面…")
                 time.sleep(2)
             browser.close()
     except Exception as exc:  # noqa: BLE001 - 浏览器起不来就退回粘贴 Cookie
         print(f"打开浏览器窗口失败: {exc}")
         return False
-    print("等待超时，没有检测到登录。可重新执行本命令再试。")
+    print("等待超时，没有确认到有效登录。可重新执行本命令再试。")
     return False
 
 
